@@ -30,6 +30,24 @@ use core::arch::x86_64::*;
 
 const NUMVEC_MAX: usize = 5; // ceil((1277 + 1) / 256)
 
+/// Erases an array of AVX2 registers through its plain-integer representation.
+///
+/// `__m256i` does not implement `Zeroize`, although every bit pattern is valid.
+/// Re-viewing the storage as `u64` therefore lets the crate's volatile wiping
+/// routine clear register-shaped stack buffers without exposing that detail at
+/// each call site.
+fn wipe_registers(registers: &mut [__m256i]) {
+    // SAFETY: `__m256i` is a plain 32-byte integer vector. Its alignment is at
+    // least that of `u64`, its size is a multiple of `u64`, and the resulting
+    // slice covers exactly the original allocation.
+    unsafe {
+        wipe(core::slice::from_raw_parts_mut(
+            registers.as_mut_ptr().cast::<u64>(),
+            size_of_val(registers) / size_of::<u64>(),
+        ));
+    }
+}
+
 #[inline]
 fn numvec(p: usize) -> usize {
     (p + 1).div_ceil(256)
@@ -147,6 +165,10 @@ fn planes_from_small(dst0: &mut [__m256i], dst1: &mut [__m256i], s: &[i8], n: us
         dst0[i] = frombits(&b0[256 * i..]);
         dst1[i] = frombits(&b1[256 * i..]);
     }
+    // These byte planes are direct copies of the secret polynomial. The
+    // destination now owns the bits needed by the caller, so erase both copies.
+    wipe(&mut b0);
+    wipe(&mut b1);
 }
 
 #[inline]
@@ -216,6 +238,8 @@ fn divx(f: &mut [__m256i], len: usize) {
         let v = _mm256_blend_epi32::<0x3>(f[i], _mm256_set_epi64x(0, 0, 0, low.cast_signed()));
         f[i] = _mm256_permute4x64_epi64::<0x39>(v);
     }
+    // Carry words are projections of secret polynomial coefficients.
+    wipe(&mut lows);
 }
 
 /// Shift up by one coefficient: inverse rotation, carries flow upward.
@@ -232,6 +256,10 @@ fn timesx(f: &mut [__m256i], len: usize) {
         let low = (lows[i] << 1) | (prev >> 63);
         f[i] = _mm256_blend_epi32::<0x3>(rot[i], _mm256_set_epi64x(0, 0, 0, low.cast_signed()));
     }
+    // Both temporaries retain the shifted secret representation after the
+    // result has been written back to `f`.
+    wipe_registers(&mut rot);
+    wipe(&mut lows);
 }
 
 /// Constant-time reciprocal in R/3 via bitsliced divstep.
@@ -327,25 +355,10 @@ pub fn reciprocal_divstep(s: &[i8], p: usize) -> (isize, Vec<i8>) {
     wipe(&mut b1);
     wipe(&mut fs);
     wipe(&mut gs);
-    for regs in [
-        f0.as_mut_ptr(),
-        f1.as_mut_ptr(),
-        g0.as_mut_ptr(),
-        g1.as_mut_ptr(),
-        v0.as_mut_ptr(),
-        v1.as_mut_ptr(),
-        r0.as_mut_ptr(),
-        r1.as_mut_ptr(),
+    for registers in [
+        &mut f0, &mut f1, &mut g0, &mut g1, &mut v0, &mut v1, &mut r0, &mut r1,
     ] {
-        // SAFETY: each array is NUMVEC_MAX `__m256i` values on this frame, so
-        // reinterpreting it as u64 words is in-bounds and correctly aligned
-        // (`__m256i` is 32-byte aligned, and its size is a multiple of 8).
-        unsafe {
-            wipe(core::slice::from_raw_parts_mut(
-                regs.cast::<u64>(),
-                NUMVEC_MAX * size_of::<__m256i>() / 8,
-            ));
-        }
+        wipe_registers(registers);
     }
 
     (negative_mask(minusdelta) as isize, out)

@@ -1038,6 +1038,9 @@ pub fn sort(x: &mut [i32], n: usize) {
         y[..n].copy_from_slice(&x[..n]);
         sort_2power(&mut y, 0, 2 * q, false);
         x[..n].copy_from_slice(&y[..n]);
+        // The padded sorting network contains the caller's secret random tags.
+        // Erase the complete frame, including sentinel padding, before returning.
+        crate::wipe::wipe(&mut y);
         return;
     }
 
