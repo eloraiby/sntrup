@@ -11,6 +11,8 @@
 //! valid ciphertext and five fixed invalid variants. Hashing the generation
 //! transcript keeps its fixture compact; rejection keys remain explicit so
 //! implicit-rejection behavior is pinned independently rather than circularly.
+//! The complete generator, pinned upstream archive checksum, Rust dependency
+//! lockfile, and reproduction command live in `tools/reference-vectors`.
 
 use rand::SeedableRng;
 use sha2::{Digest, Sha512};

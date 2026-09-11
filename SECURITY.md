@@ -19,7 +19,9 @@ The repository checks conformance at three levels:
   transcripts for all six parameter sets. The expected outputs were produced
   by `libntruprime` 20260717 using the exact ChaCha20 byte streams documented in
   that test; the full outputs matched before their concatenation was reduced to
-  compact SHA-512 fixtures.
+  compact SHA-512 fixtures. `tools/reference-vectors` checks in the complete
+  comparison harness, exact upstream archive SHA-256, locked Rust dependencies,
+  expected intermediate fingerprints, and reproduction command.
 - `tests/kat.rs` checks two historical sntrup761 algorithm vectors from
   `draft-josefsson-ntruprime-streamlined-00`.
 - Unit tests compare specialized SIMD multiplication, inversion, codec, and

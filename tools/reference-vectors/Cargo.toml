@@ -1,0 +1,25 @@
+[package]
+name = "sntrup-reference-vectors"
+version = "0.0.0"
+edition = "2024"
+publish = false
+rust-version = "1.95"
+
+# Keep this verification utility independent from any workspace that embeds the
+# parent crate. Its lockfile therefore pins the complete reproduction toolchain.
+[workspace]
+
+[dependencies]
+hex = "=0.4.3"
+rand = "=0.10.1"
+rand_chacha = "=0.10.0"
+sha2 = "=0.11.0"
+sntrup = { path = "../..", features = ["force-scalar"] }
+zeroize = "=1.9.0"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+expect_used = "deny"
+unwrap_used = "deny"
