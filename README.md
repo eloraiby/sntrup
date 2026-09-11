@@ -35,7 +35,7 @@ All key and ciphertext sizes are in bytes. Key imports enforce canonical encodin
 - All six parameter sizes: sntrup653, sntrup761, sntrup857, sntrup953, sntrup1013, sntrup1277
 - Targets IND-CCA2 security with implicit rejection
 - Data-independent decapsulation design (branchless sort, constant-time comparison and selection), subject to the platform and compiler caveats in [SECURITY.md](SECURITY.md)
-- SIMD acceleration with automatic run-time detection: AVX-512 and AVX2 (plus AVX-VNNI where present) on x86_64, NEON on aarch64
+- SIMD acceleration with automatic run-time detection: AVX-512 and AVX2 on x86_64, NEON on aarch64
 - Optional `serde` support via the `serde` feature
 - Deterministic key generation from a 32-byte seed
 

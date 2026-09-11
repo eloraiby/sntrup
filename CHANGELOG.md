@@ -21,7 +21,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - AVX2 polynomial multiplication now uses reference-derived NTT decompositions
   for all six parameter sets: 3x512 Good, twisted 4x512, or 5x512 Good according
-  to the padded degree. The Criterion suite now measures every parameter set.
+  to the padded degree. Superseded x86 schoolbook kernels remain only as
+  differential test oracles, and the Criterion suite now measures every set.
 - CI actions are pinned to immutable commits, installed CI tools to exact crate
   versions, test fixtures are included in the published package, and the
   yanked `chacha20` 0.10.0 lockfile entry is updated.

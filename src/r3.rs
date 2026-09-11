@@ -83,23 +83,11 @@ pub fn mult(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
     {
         // The NTT module selects the same 3x512, twisted 4x512, or 5x512
         // machine as rq::mult, using one prime because ternary coefficients
-        // are bounded.
-        if matches!(p, 653 | 761 | 857 | 953 | 1013 | 1277) && crate::cpu::has_avx2() {
-            // SAFETY: AVX2 support confirmed by has_avx2()
-            unsafe {
-                return crate::rq::ntt::mult3(h, f, g, p);
-            }
-        }
-        if crate::cpu::has_avxvnni() {
-            // SAFETY: AVX2 + AVX-VNNI support confirmed by has_avxvnni()
-            unsafe {
-                return mult_avxvnni(h, f, g, p);
-            }
-        }
+        // are bounded. Every internal degree is supported by that dispatcher.
         if crate::cpu::has_avx2() {
             // SAFETY: AVX2 support confirmed by has_avx2()
             unsafe {
-                return mult_avx2(h, f, g, p);
+                return crate::rq::ntt::mult3(h, f, g, p);
             }
         }
     }
@@ -148,7 +136,7 @@ fn mult_scalar(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
 /// well inside `mod3::freeze`'s i32 domain).
 macro_rules! r3_mult_x86_kernel {
     ($name:ident, $features:literal, $mac:path) => {
-        #[cfg(all(target_arch = "x86_64", not(feature = "force-scalar")))]
+        #[cfg(all(test, target_arch = "x86_64", not(feature = "force-scalar")))]
         #[target_feature(enable = $features)]
         #[allow(
             unsafe_code,

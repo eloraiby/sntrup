@@ -83,7 +83,9 @@ mod params;
 mod r3;
 mod rq;
 mod scratch;
-#[cfg(all(target_arch = "x86_64", not(feature = "force-scalar")))]
+// The former x86 schoolbook kernels remain compiled only as differential
+// oracles for the AVX2 NTT dispatcher.
+#[cfg(all(test, target_arch = "x86_64", not(feature = "force-scalar")))]
 mod simd;
 mod types;
 mod utils;

@@ -211,23 +211,12 @@ pub fn mult(h: &mut [i16], f: &[i16], g: &[i8], params: &SntrupParameters) {
     #[cfg(all(target_arch = "x86_64", not(feature = "force-scalar")))]
     {
         // The NTT module selects a 3x512 Good, twisted 4x512, or 5x512 Good
-        // machine according to the sealed parameter set.
-        if matches!(params.p, 653 | 761 | 857 | 953 | 1013 | 1277) && crate::cpu::has_avx2() {
-            // SAFETY: AVX2 support confirmed by has_avx2()
-            unsafe {
-                return ntt::mult(h, f, g, params);
-            }
-        }
-        if crate::cpu::has_avxvnni() {
-            // SAFETY: AVX2 + AVX-VNNI support confirmed by has_avxvnni()
-            unsafe {
-                return mult_avxvnni(h, f, g, params);
-            }
-        }
+        // machine according to the sealed parameter set. All six sets have an
+        // NTT arm, so AVX2-capable hosts need no schoolbook fallback.
         if crate::cpu::has_avx2() {
             // SAFETY: AVX2 support confirmed by has_avx2()
             unsafe {
-                return mult_avx2(h, f, g, params);
+                return ntt::mult(h, f, g, params);
             }
         }
     }
@@ -286,7 +275,7 @@ fn mult_scalar(h: &mut [i16], f: &[i16], g: &[i8], params: &SntrupParameters) {
 /// AVX2 has no i16-widening MAC — wrong: pmaddwd is exactly that for dot-product shapes.)
 macro_rules! rq_mult_x86_kernel {
     ($name:ident, $features:literal, $mac:path) => {
-        #[cfg(all(target_arch = "x86_64", not(feature = "force-scalar")))]
+        #[cfg(all(test, target_arch = "x86_64", not(feature = "force-scalar")))]
         #[target_feature(enable = $features)]
         #[allow(
             unsafe_code,
