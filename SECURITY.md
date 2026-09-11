@@ -21,7 +21,9 @@ The repository checks conformance at three levels:
   that test; the full outputs matched before their concatenation was reduced to
   compact SHA-512 fixtures. `tools/reference-vectors` checks in the complete
   comparison harness, exact upstream archive SHA-256, locked Rust dependencies,
-  expected intermediate fingerprints, and reproduction command.
+  expected intermediate fingerprints, and reproduction command. CI downloads
+  and authenticates that archive, rebuilds it, and requires the independently
+  generated complete transcripts to match the checked-in fingerprints.
 - `tests/kat.rs` checks two historical sntrup761 algorithm vectors from
   `draft-josefsson-ntruprime-streamlined-00`.
 - Unit tests compare specialized SIMD multiplication, inversion, codec, and

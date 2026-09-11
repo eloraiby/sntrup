@@ -86,6 +86,40 @@ jobs:
           cargo test --target x86_64-unknown-linux-gnu --lib --release
           rq::vector::tests::avx512_elimination_matches_avx2
 
+  reference-conformance:
+    runs-on: ubuntu-latest
+    env:
+      LIBNTRUPRIME_ARCHIVE: libntruprime-20260717.tar.gz
+      LIBNTRUPRIME_SHA256: 768350cd57a9395d80545d2091ed27cd7ccf93c09b41671e4e50e053bcb0bff1
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - name: Download and authenticate the independent C reference
+        working-directory: /tmp
+        run: |
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "${LIBNTRUPRIME_ARCHIVE}" \
+            "https://libntruprime.cr.yp.to/${LIBNTRUPRIME_ARCHIVE}"
+          echo "${LIBNTRUPRIME_SHA256}  ${LIBNTRUPRIME_ARCHIVE}" \
+            | sha256sum --check --strict
+          tar --extract --gzip --file "${LIBNTRUPRIME_ARCHIVE}"
+      - name: Build the authenticated C reference
+        working-directory: /tmp/libntruprime-20260717
+        run: |
+          ./configure
+          make -j2
+      - name: Compare complete deterministic transcripts
+        env:
+          LIBNTRUPRIME_LIB_DIR: /tmp/libntruprime-20260717/build/0/package/lib
+        run: |
+          cargo run --release --locked \
+            --manifest-path tools/reference-vectors/Cargo.toml \
+            > /tmp/reference-vectors.actual
+          diff --unified tools/reference-vectors/expected.txt \
+            /tmp/reference-vectors.actual
+
   feature-gates:
     runs-on: ubuntu-latest
     env:

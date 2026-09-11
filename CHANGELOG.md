@@ -10,7 +10,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Compact, independently generated `libntruprime` transcript fixtures for all
-  six parameter sets, plus AddressSanitizer and RustSec CI gates.
+  six parameter sets, plus CI reproduction against the checksum-pinned C
+  archive and AddressSanitizer and RustSec gates.
 - Canonical public-key import validation and structural private-key validation,
   including the embedded public-key hash.
 - `TryFrom` conversions for shared secrets and a dedicated security document
