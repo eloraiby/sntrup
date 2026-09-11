@@ -61,17 +61,17 @@
 //! | Target | Selected when | Used for |
 //! |--------|---------------|----------|
 //! | AVX-512 (F/BW/VL) | probed at run time | divstep inversion, 32 coefficients per step |
-//! | AVX2 | probed at run time | everything else on x86_64 |
-//! | AVX-VNNI | probed at run time | the schoolbook multiply, where available |
+//! | AVX2 | probed at run time | NTT multiplication and the remaining x86_64 vector kernels |
 //! | NEON | baseline on `aarch64` | all vector kernels |
 //! | scalar | no SIMD, or `force-scalar` | everything |
 //!
-//! The polynomial multiply takes two different shapes. For sntrup761 on x86_64
-//! it is a number-theoretic transform (Good's 3x512 decomposition over the
-//! primes 7681 and 10753, recombined by CRT). Every other parameter set, and
-//! all of `aarch64`, uses a schoolbook kernel that computes each output
-//! coefficient as a contiguous dot product spread across eight independent
-//! widening multiply-accumulate chains.
+//! Every parameter set uses number-theoretic-transform multiplication on AVX2
+//! x86_64 hosts. sntrup653 and sntrup761 use a 3x512 Good decomposition;
+//! sntrup857, sntrup953, and sntrup1013 use four strided 512-point tracks with
+//! a transformed-variable twist; and sntrup1277 uses a 5x512 Good
+//! decomposition. R/q transforms use primes 7681 and 10753 followed by CRT,
+//! while bounded R/3 products need only 7681. `aarch64` and non-AVX2 hosts use
+//! schoolbook kernels whose output coefficients are contiguous dot products.
 
 mod cpu;
 mod ct;

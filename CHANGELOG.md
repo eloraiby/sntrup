@@ -18,6 +18,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- AVX2 polynomial multiplication now uses reference-derived NTT decompositions
+  for all six parameter sets: 3x512 Good, twisted 4x512, or 5x512 Good according
+  to the padded degree. The Criterion suite now measures every parameter set.
 - CI actions are pinned to immutable commits, test fixtures are included in the
   published package, and the yanked `chacha20` 0.10.0 lockfile entry is updated.
 - Documentation now identifies sntrup1013 as claimed NIST Category 4, states

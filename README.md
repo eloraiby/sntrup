@@ -275,13 +275,13 @@ On aarch64 (Apple M2 Max), sntrup761, against their portable C builds: keypair 6
 
 Two things drive the x86_64 numbers. Key generation runs the Bernstein–Yang divstep inversion
 through **AVX-512**, 32 coefficients per step — neither PQClean nor liboqs has a 512-bit path
-for this KEM. Encapsulation and decapsulation run sntrup761's polynomial multiply as a
-number-theoretic transform (Good's 3x512 decomposition over the primes 7681 and 10753,
-recombined by CRT). Every other parameter set, and all of aarch64, uses a schoolbook kernel
-that computes each output coefficient as a contiguous dot product spread across eight
-independent widening multiply-accumulate chains (`smlal`-family on NEON, `pmaddwd`/`vpdpwssd`
-on x86_64) — a shape taken from disassembling what clang's autovectorizer produces for
-PQClean's reference C and then out-tuning it.
+for this KEM. Encapsulation and decapsulation use number-theoretic-transform multiplication
+on every AVX2 parameter set. sntrup653 and sntrup761 use a 3x512 Good decomposition;
+sntrup857, sntrup953, and sntrup1013 use four strided 512-point tracks with a transformed-track
+twist; and sntrup1277 uses a 5x512 Good decomposition. R/q uses the primes 7681 and 10753 with
+CRT recombination, while bounded R/3 products need only 7681. On aarch64 and x86_64 without
+AVX2, a schoolbook kernel computes each output coefficient as a contiguous dot product spread
+across independent widening multiply-accumulate chains.
 
 See [`benches/comparison/RESULTS.md`](benches/comparison/RESULTS.md) for the full
 investigation narrative — every landed optimization with its measurement, and the measured
@@ -290,7 +290,7 @@ dead ends — plus machine and build details.
 **A SIMD-testing gotcha every contributor should read:** `--all-features` enables
 `force-scalar`, which silently compiles the SIMD kernels out of the test binary. The permanent
 kernel-vs-scalar differential tests in `src/rq.rs` and `src/r3.rs` only exercise SIMD when
-built with a feature set that leaves `force-scalar` off, e.g. `--features kem,serde,std`.
+built with a feature set that leaves `force-scalar` off, e.g. `--features kem,serde`.
 
 # License
 
