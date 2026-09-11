@@ -76,9 +76,16 @@ is accepted.
 
 Private-key and shared-secret wrappers implement zeroization on drop. Internal
 secret-derived arrays, vectors, polynomial products, hash state, and rejected
-key-generation candidates are explicitly erased before release. Owned private
-key imports move their accepted allocation instead of cloning it, and malformed
-owned inputs are erased on the error path.
+key-generation candidates are held in drop guards and erased before release.
+Those guards also run during Rust panic unwinding, including when a caller-
+supplied random generator panics after partially filling a destination. Owned
+private-key imports move their accepted allocation instead of cloning it, and
+malformed owned inputs remain guarded throughout validation.
+
+No in-process cleanup mechanism runs after `panic = "abort"`, forced process
+termination, power loss, or operating-system failure. Deployments that require
+post-crash secrecy must combine zeroization with disabled core dumps, locked or
+encrypted memory where appropriate, and process-level containment.
 
 Zeroization cannot erase copies outside the wrapper. This includes bytes made
 through `AsRef`, serialized output, protocol buffers, exported `kem` trait

@@ -8,7 +8,7 @@ mod vector;
 
 use crate::ct::{smaller_mask, swap_int};
 use crate::params::SntrupParameters;
-use crate::wipe::wipe;
+use crate::wipe::SecretBuffer;
 
 /// Reciprocal of `3·s` in R/q, dispatched: divstep on x86_64/AVX2, the
 /// top-coefficient-elimination form elsewhere. Both produce identical canonical
@@ -66,17 +66,17 @@ fn reciprocal3_divstep(s: &[i8], params: &SntrupParameters) -> Vec<i16> {
         x >> 31
     }
 
-    let mut f = vec![0i16; ppad];
+    let mut f = SecretBuffer::new(vec![0i16; ppad]);
     f[0] = 1;
     f[p - 1] = -1;
     f[p] = -1;
     // g = reversal of s (the reversal makes the divstep shift go downward).
-    let mut g = vec![0i16; ppad];
+    let mut g = SecretBuffer::new(vec![0i16; ppad]);
     for i in 0..p {
         g[i] = i16::from(s[p - 1 - i]);
     }
-    let mut v = vec![0i16; ppad];
-    let mut r = vec![0i16; ppad];
+    let mut v = SecretBuffer::new(vec![0i16; ppad]);
+    let mut r = SecretBuffer::new(vec![0i16; ppad]);
     // Folds the "3" of 1/(3s) into the Bezout side.
     r[0] = modq::reciprocal(3, q, b1, b2);
 
@@ -116,17 +116,13 @@ fn reciprocal3_divstep(s: &[i8], params: &SntrupParameters) -> Vec<i16> {
     }
 
     let scale = modq::reciprocal(modq::freeze(i32::from(f[0]), q, b1, b2), q, b1, b2);
-    let mut out = vec![0i16; p];
+    let mut out = SecretBuffer::new(vec![0i16; p]);
     for (i, o) in out.iter_mut().enumerate() {
         let vi = modq::freeze(i32::from(v[p - i]), q, b1, b2);
         *o = modq::product(scale, vi, q, b1, b2);
     }
-    // The divstep state is derived from the secret input — wipe it before returning.
-    wipe(&mut f);
-    wipe(&mut g);
-    wipe(&mut v);
-    wipe(&mut r);
-    out
+    // The guarded divstep state is erased on return and on panic unwinding.
+    out.take()
 }
 
 /// Top-coefficient elimination form (the pre-divstep algorithm): the non-x86
@@ -146,20 +142,20 @@ fn reciprocal3_eliminate(s: &[i8], params: &SntrupParameters) -> Vec<i16> {
     // upward — index p and below, the only entries ever read, are untouched by it.
     let pad = |len: usize| (len + 15) & !15;
 
-    let mut r = vec![0i16; p];
-    let mut f = vec![0i16; pad(p + 1)];
+    let mut r = SecretBuffer::new(vec![0i16; p]);
+    let mut f = SecretBuffer::new(vec![0i16; pad(p + 1)]);
     f[0] = -1;
     f[1] = -1;
     f[p] = 1;
-    let mut g = vec![0i16; pad(p + 1)];
+    let mut g = SecretBuffer::new(vec![0i16; pad(p + 1)]);
     for i in 0..p {
         g[i] = (3 * s[i]) as i16;
     }
     let fg_len = f.len();
     let mut d = p as isize;
     let mut e = p as isize;
-    let mut u = vec![0i16; pad(loops + 1)];
-    let mut v = vec![0i16; pad(loops + 1)];
+    let mut u = SecretBuffer::new(vec![0i16; pad(loops + 1)]);
+    let mut v = SecretBuffer::new(vec![0i16; pad(loops + 1)]);
     let uv_cap = u.len();
     v[0] = 1;
 
@@ -193,16 +189,12 @@ fn reciprocal3_eliminate(s: &[i8], params: &SntrupParameters) -> Vec<i16> {
         b1,
         b2,
     );
-    // The Euclidean state is derived from the secret input — wipe it before returning.
-    wipe(&mut f);
-    wipe(&mut g);
-    wipe(&mut u);
-    wipe(&mut v);
+    // The guarded Euclidean state is erased on return and on panic unwinding.
     // Note: unlike r3::reciprocal, no invertibility check is returned here.
     // For these parameter sets q is prime and x^p - x - 1 is irreducible mod q,
     // so R/q is a field and the weight-w secret f is always invertible — the
     // reciprocal never fails, so there is no failure mask to propagate.
-    r
+    r.take()
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -255,7 +247,7 @@ fn mult_scalar(h: &mut [i16], f: &[i16], g: &[i8], params: &SntrupParameters) {
     let b1 = params.barrett1;
     let b2 = params.barrett2;
 
-    let mut fg = vec![0i16; p * 2 - 1];
+    let mut fg = SecretBuffer::new(vec![0i16; p * 2 - 1]);
     for i in 0..p {
         let mut r = 0i32;
         for j in 0..=i {
@@ -275,8 +267,8 @@ fn mult_scalar(h: &mut [i16], f: &[i16], g: &[i8], params: &SntrupParameters) {
         fg[i - p + 1] = modq::freeze(fg[i - p + 1] as i32 + fg[i] as i32, q, b1, b2);
     }
     h[..p].copy_from_slice(&fg[..p]);
-    // At least one operand is secret at every call site — wipe the product scratch.
-    wipe(&mut fg);
+    // At least one operand is secret at every call site; the product guard
+    // erases the convolution on both return and unwinding.
 }
 
 /// Row-major schoolbook multiplication for x86_64, expanded once per instruction level
@@ -313,14 +305,14 @@ macro_rules! rq_mult_x86_kernel {
                 let b2 = params.barrett2;
                 let fg_len = p * 2 - 1;
 
-                let mut g_rev = vec![0i16; p];
+                let mut g_rev = SecretBuffer::new(vec![0i16; p]);
                 for i in 0..p {
                     g_rev[i] = g[p - 1 - i] as i16;
                 }
 
                 // Raw i32 convolution sums, padded with one zero so the fold below may read
                 // `fg32[k + p]` unconditionally at `k = p - 1`.
-                let mut fg32 = vec![0i32; fg_len + 1];
+                let mut fg32 = SecretBuffer::new(vec![0i32; fg_len + 1]);
                 for (i, out) in fg32[..fg_len].iter_mut().enumerate() {
                     let jlo = i.saturating_sub(p - 1);
                     let len = i.min(p - 1) - jlo + 1;
@@ -438,10 +430,8 @@ macro_rules! rq_mult_x86_kernel {
                     k += 1;
                 }
 
-                // At least one operand is secret at every call site — wipe the
-                // reversed copy and the product scratch.
-                wipe(&mut g_rev);
-                wipe(&mut fg32);
+                // At least one operand is secret at every call site. Guards
+                // erase the reversed copy and product scratch on every exit.
             }
         }
     };
@@ -489,14 +479,14 @@ unsafe fn mult_neon(h: &mut [i16], f: &[i16], g: &[i8], params: &SntrupParameter
         let b2 = params.barrett2;
         let fg_len = p * 2 - 1;
 
-        let mut g_rev = vec![0i16; p];
+        let mut g_rev = SecretBuffer::new(vec![0i16; p]);
         for i in 0..p {
             g_rev[i] = g[p - 1 - i] as i16;
         }
 
         // Raw i32 convolution sums, padded with one zero so the fold below may read
         // `fg32[k + p]` unconditionally at `k = p - 1`.
-        let mut fg32 = vec![0i32; fg_len + 1];
+        let mut fg32 = SecretBuffer::new(vec![0i32; fg_len + 1]);
         for (i, out) in fg32[..fg_len].iter_mut().enumerate() {
             let jlo = i.saturating_sub(p - 1);
             let len = i.min(p - 1) - jlo + 1;
@@ -605,10 +595,8 @@ unsafe fn mult_neon(h: &mut [i16], f: &[i16], g: &[i8], params: &SntrupParameter
             k += 1;
         }
 
-        // At least one operand is secret at every call site — wipe the reversed copy
-        // and the product scratch.
-        wipe(&mut g_rev);
-        wipe(&mut fg32);
+        // At least one operand is secret at every call site. Guards erase the
+        // reversed copy and product scratch on every exit.
     }
 }
 

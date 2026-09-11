@@ -526,7 +526,7 @@ pub fn rounded_encode_into(f: &[i16], out: &mut [u8], params: &SntrupParameters)
     let q12 = params.q12;
     let q_rounded = (params.q as u16).div_ceil(3);
 
-    let mut r_buf = [0u16; crate::params::MAX_P];
+    let mut r_buf = crate::wipe::SecretBuffer::new([0u16; crate::params::MAX_P]);
     let r = &mut r_buf[..p];
     for (ri, &fi) in r.iter_mut().zip(f.iter()) {
         *ri = (((fi as i32 + q12) * 10923) >> 15) as u16;
@@ -534,10 +534,9 @@ pub fn rounded_encode_into(f: &[i16], out: &mut [u8], params: &SntrupParameters)
     let mut m = [0u16; crate::params::MAX_P];
     m[..p].fill(q_rounded);
     encode(&mut out[..params.rounded_encode_size], r, &mut m[..p], p);
-    // On the decapsulation path `f` is the re-encrypted candidate, secret until (and unless)
-    // the constant-time ciphertext comparison succeeds — wipe the working representation,
-    // which `encode` mutates in place across pairing levels. `m` holds only public moduli.
-    crate::wipe::wipe(&mut r_buf);
+    // On decapsulation `f` is the secret candidate until comparison succeeds.
+    // The guard erases the radix workspace on return or unwinding; `m` contains
+    // only public moduli and needs no such treatment.
 }
 
 /// Allocation-free form of [`rounded_decode`]: writes into `out[..p]`.

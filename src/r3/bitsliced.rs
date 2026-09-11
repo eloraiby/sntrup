@@ -25,7 +25,7 @@
     clippy::cast_possible_wrap
 )]
 
-use crate::wipe::wipe;
+use crate::wipe::{SecretBuffer, wipe};
 use core::arch::x86_64::*;
 
 const NUMVEC_MAX: usize = 5; // ceil((1277 + 1) / 256)
@@ -45,6 +45,42 @@ fn wipe_registers(registers: &mut [__m256i]) {
             registers.as_mut_ptr().cast::<u64>(),
             size_of_val(registers) / size_of::<u64>(),
         ));
+    }
+}
+
+/// Owns one fixed AVX2 register bank and erases it at every scope exit.
+///
+/// A dedicated wrapper is necessary because `__m256i` has no `Zeroize`
+/// implementation and therefore cannot use [`SecretBuffer`].
+struct SecretRegisters {
+    /// The bitsliced polynomial words retained by this scope.
+    registers: [__m256i; NUMVEC_MAX],
+}
+
+impl SecretRegisters {
+    /// Takes ownership of an initialized register bank.
+    fn new(registers: [__m256i; NUMVEC_MAX]) -> Self {
+        Self { registers }
+    }
+}
+
+impl core::ops::Deref for SecretRegisters {
+    type Target = [__m256i; NUMVEC_MAX];
+
+    fn deref(&self) -> &Self::Target {
+        &self.registers
+    }
+}
+
+impl core::ops::DerefMut for SecretRegisters {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.registers
+    }
+}
+
+impl Drop for SecretRegisters {
+    fn drop(&mut self) {
+        wipe_registers(&mut self.registers);
     }
 }
 
@@ -155,8 +191,8 @@ fn tobits(h: __m256i, b: &mut [i8]) {
 /// Bitplane-encode a ternary polynomial (given as bytes of 0/1 per plane).
 #[target_feature(enable = "avx2")]
 fn planes_from_small(dst0: &mut [__m256i], dst1: &mut [__m256i], s: &[i8], n: usize) {
-    let mut b0 = [0i8; NUMVEC_MAX * 256];
-    let mut b1 = [0i8; NUMVEC_MAX * 256];
+    let mut b0 = SecretBuffer::new([0i8; NUMVEC_MAX * 256]);
+    let mut b1 = SecretBuffer::new([0i8; NUMVEC_MAX * 256]);
     for (i, &si) in s.iter().enumerate() {
         b0[i] = si & 1;
         b1[i] = (si >> 1) & b0[i];
@@ -165,10 +201,7 @@ fn planes_from_small(dst0: &mut [__m256i], dst1: &mut [__m256i], s: &[i8], n: us
         dst0[i] = frombits(&b0[256 * i..]);
         dst1[i] = frombits(&b1[256 * i..]);
     }
-    // These byte planes are direct copies of the secret polynomial. The
-    // destination now owns the bits needed by the caller, so erase both copies.
-    wipe(&mut b0);
-    wipe(&mut b1);
+    // These guarded byte planes are direct copies of the secret polynomial.
 }
 
 #[inline]
@@ -228,7 +261,7 @@ fn bit0mask(f: &[__m256i]) -> i32 {
 /// word 0 with a scalar shift chained from the next register.
 #[target_feature(enable = "avx2")]
 fn divx(f: &mut [__m256i], len: usize) {
-    let mut lows = [0u64; NUMVEC_MAX];
+    let mut lows = SecretBuffer::new([0u64; NUMVEC_MAX]);
     for i in 0..len {
         lows[i] = _mm_cvtsi128_si64(_mm256_castsi256_si128(f[i])).cast_unsigned();
     }
@@ -238,15 +271,14 @@ fn divx(f: &mut [__m256i], len: usize) {
         let v = _mm256_blend_epi32::<0x3>(f[i], _mm256_set_epi64x(0, 0, 0, low.cast_signed()));
         f[i] = _mm256_permute4x64_epi64::<0x39>(v);
     }
-    // Carry words are projections of secret polynomial coefficients.
-    wipe(&mut lows);
+    // Guarded carry words are projections of secret polynomial coefficients.
 }
 
 /// Shift up by one coefficient: inverse rotation, carries flow upward.
 #[target_feature(enable = "avx2")]
 fn timesx(f: &mut [__m256i], len: usize) {
-    let mut rot = [_mm256_setzero_si256(); NUMVEC_MAX];
-    let mut lows = [0u64; NUMVEC_MAX];
+    let mut rot = SecretRegisters::new([_mm256_setzero_si256(); NUMVEC_MAX]);
+    let mut lows = SecretBuffer::new([0u64; NUMVEC_MAX]);
     for i in 0..len {
         rot[i] = _mm256_permute4x64_epi64::<0x93>(f[i]);
         lows[i] = _mm_cvtsi128_si64(_mm256_castsi256_si128(rot[i])).cast_unsigned();
@@ -256,10 +288,7 @@ fn timesx(f: &mut [__m256i], len: usize) {
         let low = (lows[i] << 1) | (prev >> 63);
         f[i] = _mm256_blend_epi32::<0x3>(rot[i], _mm256_set_epi64x(0, 0, 0, low.cast_signed()));
     }
-    // Both temporaries retain the shifted secret representation after the
-    // result has been written back to `f`.
-    wipe_registers(&mut rot);
-    wipe(&mut lows);
+    // Both guarded temporaries retain shifted secret data after writeback.
 }
 
 /// Constant-time reciprocal in R/3 via bitsliced divstep.
@@ -271,28 +300,28 @@ pub fn reciprocal_divstep(s: &[i8], p: usize) -> (isize, Vec<i8>) {
     let n = numvec(p);
     let total = 2 * p - 1;
 
-    let mut f0 = [_mm256_setzero_si256(); NUMVEC_MAX];
-    let mut f1 = [_mm256_setzero_si256(); NUMVEC_MAX];
-    let mut g0 = [_mm256_setzero_si256(); NUMVEC_MAX];
-    let mut g1 = [_mm256_setzero_si256(); NUMVEC_MAX];
-    let mut v0 = [_mm256_setzero_si256(); NUMVEC_MAX];
-    let mut v1 = [_mm256_setzero_si256(); NUMVEC_MAX];
-    let mut r0 = [_mm256_setzero_si256(); NUMVEC_MAX];
-    let mut r1 = [_mm256_setzero_si256(); NUMVEC_MAX];
+    let mut f0 = SecretRegisters::new([_mm256_setzero_si256(); NUMVEC_MAX]);
+    let mut f1 = SecretRegisters::new([_mm256_setzero_si256(); NUMVEC_MAX]);
+    let mut g0 = SecretRegisters::new([_mm256_setzero_si256(); NUMVEC_MAX]);
+    let mut g1 = SecretRegisters::new([_mm256_setzero_si256(); NUMVEC_MAX]);
+    let mut v0 = SecretRegisters::new([_mm256_setzero_si256(); NUMVEC_MAX]);
+    let mut v1 = SecretRegisters::new([_mm256_setzero_si256(); NUMVEC_MAX]);
+    let mut r0 = SecretRegisters::new([_mm256_setzero_si256(); NUMVEC_MAX]);
+    let mut r1 = SecretRegisters::new([_mm256_setzero_si256(); NUMVEC_MAX]);
 
     // f = reversal of x^p - x - 1: coefficients 1 at 0, -1 at p-1, -1 at p.
-    let mut fs = [0i8; NUMVEC_MAX * 256];
+    let mut fs = SecretBuffer::new([0i8; NUMVEC_MAX * 256]);
     fs[0] = 1;
     fs[p - 1] = -1;
     fs[p] = -1;
-    planes_from_small(&mut f0, &mut f1, &fs[..n * 256], n);
+    planes_from_small(&mut f0[..], &mut f1[..], &fs[..n * 256], n);
 
     // g = reversal of s.
-    let mut gs = [0i8; NUMVEC_MAX * 256];
+    let mut gs = SecretBuffer::new([0i8; NUMVEC_MAX * 256]);
     for i in 0..p {
         gs[i] = s[p - 1 - i];
     }
-    planes_from_small(&mut g0, &mut g1, &gs[..n * 256], n);
+    planes_from_small(&mut g0[..], &mut g1[..], &gs[..n * 256], n);
 
     // r = 1; v = 0.
     r0[0] = _mm256_set_epi32(0, 0, 0, 0, 0, 0, 0, 1);
@@ -306,60 +335,50 @@ pub fn reciprocal_divstep(s: &[i8], p: usize) -> (isize, Vec<i8>) {
         let vw = n.min(k / 256 + 1);
         let fw = n.min((total - k).div_ceil(256));
 
-        timesx(&mut v0, vw);
-        timesx(&mut v1, vw);
+        timesx(&mut v0[..], vw);
+        timesx(&mut v1[..], vw);
 
-        let swapmask = negative_mask(minusdelta) & bit0mask(&g0);
-        let c0 = bit0mask(&f0) & bit0mask(&g0);
-        let c1 = (bit0mask(&f1) ^ bit0mask(&g1)) & c0;
+        let swapmask = negative_mask(minusdelta) & bit0mask(&g0[..]);
+        let c0 = bit0mask(&f0[..]) & bit0mask(&g0[..]);
+        let c1 = (bit0mask(&f1[..]) ^ bit0mask(&g1[..])) & c0;
 
         minusdelta ^= swapmask & (minusdelta ^ -minusdelta);
         minusdelta -= 1;
 
         let swapvec = _mm256_set1_epi32(swapmask);
-        swap(&mut f0, &mut g0, fw, swapvec);
-        swap(&mut f1, &mut g1, fw, swapvec);
+        swap(&mut f0[..], &mut g0[..], fw, swapvec);
+        swap(&mut f1[..], &mut g1[..], fw, swapvec);
 
         let c0v = _mm256_set1_epi32(c0);
         let c1v = _mm256_set1_epi32(c1);
-        eliminate(&f0, &f1, &mut g0, &mut g1, fw, c0v, c1v);
-        divx(&mut g0, fw);
-        divx(&mut g1, fw);
+        eliminate(&f0[..], &f1[..], &mut g0[..], &mut g1[..], fw, c0v, c1v);
+        divx(&mut g0[..], fw);
+        divx(&mut g1[..], fw);
 
-        swap(&mut v0, &mut r0, vw, swapvec);
-        swap(&mut v1, &mut r1, vw, swapvec);
-        eliminate(&v0, &v1, &mut r0, &mut r1, vw, c0v, c1v);
+        swap(&mut v0[..], &mut r0[..], vw, swapvec);
+        swap(&mut v1[..], &mut r1[..], vw, swapvec);
+        eliminate(&v0[..], &v1[..], &mut r0[..], &mut r1[..], vw, c0v, c1v);
     }
 
     // Scale V by the unit f0 and unpack, reversing back.
-    let c0v = _mm256_set1_epi32(bit0mask(&f0));
-    let c1v = _mm256_set1_epi32(bit0mask(&f1));
-    scale(&mut v0, &mut v1, n, c0v, c1v);
+    let c0v = _mm256_set1_epi32(bit0mask(&f0[..]));
+    let c1v = _mm256_set1_epi32(bit0mask(&f1[..]));
+    scale(&mut v0[..], &mut v1[..], n, c0v, c1v);
 
-    let mut b0 = [0i8; NUMVEC_MAX * 256];
-    let mut b1 = [0i8; NUMVEC_MAX * 256];
+    let mut b0 = SecretBuffer::new([0i8; NUMVEC_MAX * 256]);
+    let mut b1 = SecretBuffer::new([0i8; NUMVEC_MAX * 256]);
     for i in 0..n {
         tobits(v0[i], &mut b0[256 * i..]);
         tobits(v1[i], &mut b1[256 * i..]);
     }
-    let mut out = vec![0i8; p];
+    let mut out = SecretBuffer::new(vec![0i8; p]);
     for (i, o) in out.iter_mut().enumerate() {
         let (x0, x1) = (b0[p - 1 - i], b1[p - 1 - i]);
         *o = x0 + 2 * x1 - 4 * (x0 & x1);
     }
 
-    // Everything above is derived from the secret input. The unpacked byte planes
-    // and the input scratch zeroize directly; the bitplane registers are wiped
-    // through their raw bytes, since `__m256i` has no `Zeroize` impl.
-    wipe(&mut b0);
-    wipe(&mut b1);
-    wipe(&mut fs);
-    wipe(&mut gs);
-    for registers in [
-        &mut f0, &mut f1, &mut g0, &mut g1, &mut v0, &mut v1, &mut r0, &mut r1,
-    ] {
-        wipe_registers(registers);
-    }
+    // Every secret-derived byte plane and register bank above owns an unwind-
+    // safe guard, including the raw-register adapter used for `__m256i`.
 
-    (negative_mask(minusdelta) as isize, out)
+    (negative_mask(minusdelta) as isize, out.take())
 }

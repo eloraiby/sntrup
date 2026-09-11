@@ -2,6 +2,7 @@
 
 use crate::error::Error;
 use crate::params::SntrupParams;
+use crate::wipe::SecretBuffer;
 use core::marker::PhantomData;
 use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
@@ -385,16 +386,18 @@ macro_rules! impl_secret_bytes_try_from {
 
         impl<P: SntrupParams> TryFrom<Vec<u8>> for $ty<P> {
             type Error = Error;
-            fn try_from(mut bytes: Vec<u8>) -> Result<Self, Self::Error> {
+            fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+                let mut bytes = SecretBuffer::new(bytes);
                 if bytes.len() != P::$size {
                     let actual = bytes.len();
-                    bytes.zeroize();
                     return Err(Error::InvalidSize {
                         expected: P::$size,
                         actual,
                     });
                 }
-                Ok(Self::from_vec(bytes))
+                // Transfer the allocation only after validation. The returned
+                // secret wrapper takes over the drop-erasure responsibility.
+                Ok(Self::from_vec(bytes.take()))
             }
         }
 
@@ -504,12 +507,10 @@ impl<P: SntrupParams> TryFrom<&[u8]> for DecapsulationKey<P> {
 
 impl<P: SntrupParams> TryFrom<Vec<u8>> for DecapsulationKey<P> {
     type Error = Error;
-    fn try_from(mut bytes: Vec<u8>) -> Result<Self, Self::Error> {
+    fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+        let mut bytes = SecretBuffer::new(bytes);
         if bytes.len() != P::SK_BYTES {
             let actual = bytes.len();
-            // An owned import buffer is caller-supplied secret material even
-            // when malformed. Wipe it before returning the validation error.
-            bytes.zeroize();
             return Err(Error::InvalidSize {
                 expected: P::SK_BYTES,
                 actual,
@@ -517,15 +518,14 @@ impl<P: SntrupParams> TryFrom<Vec<u8>> for DecapsulationKey<P> {
         }
 
         let Some(public_polynomial) = validate_private_key::<P>(&bytes) else {
-            bytes.zeroize();
             return Err(Error::InvalidEncoding {
                 kind: "decapsulation key",
             });
         };
 
         // Transfer the allocation directly into the key. This avoids creating
-        // a second secret copy that would otherwise be dropped unwiped.
-        Ok(Self::from_validated_vec(bytes, public_polynomial))
+        // a second secret copy; the key assumes its drop-erasure responsibility.
+        Ok(Self::from_validated_vec(bytes.take(), public_polynomial))
     }
 }
 

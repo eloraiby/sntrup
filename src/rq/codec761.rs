@@ -28,7 +28,7 @@
     clippy::cast_possible_wrap
 )]
 
-use crate::wipe::wipe;
+use crate::wipe::SecretBuffer;
 use core::arch::x86_64::*;
 
 /// C `int16` truncation: assignments to an `int16` wrap.
@@ -760,7 +760,7 @@ unsafe fn enc_pass_b(
 #[target_feature(enable = "avx2")]
 pub fn encode_761x1531round(out: &mut [u8], r0: &[i16]) {
     unsafe {
-        let mut r = [0u16; 381];
+        let mut r = SecretBuffer::new([0u16; 381]);
         // Level 0 reads the caller's coefficients and writes carries into `r`;
         // every later level reads and writes `r` in place.
         let rp = r.as_mut_ptr();
@@ -807,10 +807,8 @@ pub fn encode_761x1531round(out: &mut [u8], r0: &[i16]) {
         *op.add(o) = r[0] as u8;
         *op.add(o + 1) = (r[0] >> 8) as u8;
 
-        // Encapsulation and decapsulation both encode a secret ternary
-        // polynomial here. Clear the radix-reduction workspace after emitting
-        // the public ciphertext bytes.
-        wipe(&mut r);
+        // Encapsulation and decapsulation both encode a secret polynomial here.
+        // The radix-reduction guard erases the workspace on every exit.
     }
 }
 

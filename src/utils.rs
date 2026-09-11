@@ -3,6 +3,7 @@ use zeroize::Zeroize;
 
 use crate::params::SntrupParameters;
 use crate::scratch::scratch_array;
+use crate::wipe::SecretBuffer;
 use crate::{r3, rq, zx};
 
 /// Hash prefix helper: SHA-512(prefix || input), truncated to 32 bytes.
@@ -12,38 +13,39 @@ pub(crate) fn hash_prefix(out: &mut [u8; 32], prefix: u8, input: &[u8]) {
     hasher.update(input);
     let mut digest = hasher.finalize();
     out.copy_from_slice(&digest[..32]);
-    // The discarded upper half is still derived from (possibly secret) input — wipe it.
+    // No fallible operation follows the fixed-size copy; erase the discarded,
+    // possibly secret-derived upper half before returning.
     digest.zeroize();
 }
 
 /// hash_confirm: Hash(2 || Hash(3 || r_enc) || cache)
 /// where cache = Hash4(pk) stored in the secret key.
 pub(crate) fn hash_confirm(out: &mut [u8; 32], r_enc: &[u8], cache: &[u8; 32]) {
-    let mut inner = [0u8; 32];
+    let mut inner = SecretBuffer::new([0u8; 32]);
     hash_prefix(&mut inner, 3, r_enc);
 
     let mut hasher = Sha512::new();
     hasher.update([2u8]);
-    hasher.update(inner);
+    hasher.update(&inner[..]);
     hasher.update(&cache[..]);
     let mut digest = hasher.finalize();
     out.copy_from_slice(&digest[..32]);
-    inner.zeroize();
+    // `inner` is guarded; no fallible operation separates this copy and wipe.
     digest.zeroize();
 }
 
 /// hash_session: Hash(b || Hash(3 || y) || z)
 pub(crate) fn hash_session(out: &mut [u8; 32], b: u8, y: &[u8], z: &[u8]) {
-    let mut inner = [0u8; 32];
+    let mut inner = SecretBuffer::new([0u8; 32]);
     hash_prefix(&mut inner, 3, y);
 
     let mut hasher = Sha512::new();
     hasher.update([b]);
-    hasher.update(inner);
+    hasher.update(&inner[..]);
     hasher.update(z);
     let mut digest = hasher.finalize();
     out.copy_from_slice(&digest[..32]);
-    inner.zeroize();
+    // `inner` is guarded; no fallible operation separates this copy and wipe.
     digest.zeroize();
 }
 
@@ -267,15 +269,15 @@ pub(crate) fn derive_key(
 ) -> (Vec<u8>, Vec<u8>) {
     let p = params.p;
 
-    let mut f3r = rq::reciprocal3(f, params);
-    let mut h = vec![0i16; p];
+    let f3r = SecretBuffer::new(rq::reciprocal3(f, params));
+    let mut h = SecretBuffer::new(vec![0i16; p]);
     rq::mult(&mut h, &f3r, g, params);
     let pk = rq::encoding::rq_encode(&h, params);
 
     // SK layout: f_enc || ginv_enc || pk || rho || Hash4(pk)
-    let mut sk = vec![0u8; params.sk_size];
-    let mut f_enc = zx::encoding::encode(f, p, params.small_encode_size);
-    let mut ginv_enc = zx::encoding::encode(gr, p, params.small_encode_size);
+    let mut sk = SecretBuffer::new(vec![0u8; params.sk_size]);
+    let f_enc = SecretBuffer::new(zx::encoding::encode(f, p, params.small_encode_size));
+    let ginv_enc = SecretBuffer::new(zx::encoding::encode(gr, p, params.small_encode_size));
 
     let ses = params.small_encode_size;
     sk[..ses].copy_from_slice(&f_enc);
@@ -284,18 +286,13 @@ pub(crate) fn derive_key(
     sk[(2 * ses + params.pk_size)..(2 * ses + params.pk_size + ses)].copy_from_slice(rho);
 
     // Hash4(pk) = Hash(4 || pk) truncated to 32 bytes
-    let mut cache = [0u8; 32];
+    let mut cache = SecretBuffer::new([0u8; 32]);
     hash_prefix(&mut cache, 4, &pk);
-    sk[(2 * ses + params.pk_size + ses)..].copy_from_slice(&cache);
+    sk[(2 * ses + params.pk_size + ses)..].copy_from_slice(&cache[..]);
 
-    // Zeroize secret intermediates
-    f3r.zeroize();
-    h.zeroize();
-    f_enc.zeroize();
-    ginv_enc.zeroize();
-    cache.zeroize();
-
-    (pk, sk)
+    // Drop guards erase every private-key intermediate on ordinary return and
+    // on unwinding from allocation, encoding, or arithmetic.
+    (pk, sk.take())
 }
 
 /// Encrypt a small polynomial `r` under a public key.
@@ -331,26 +328,21 @@ pub(crate) fn create_cipher(
 
     // Compute confirm hash: Hash(2 || Hash(3 || r_enc) || Hash4(pk)); Hash4(pk) is
     // the caller-cached `pk_hash`.
-    let mut confirm = [0u8; 32];
+    let mut confirm = SecretBuffer::new([0u8; 32]);
     hash_confirm(&mut confirm, r_enc, pk_hash);
 
     // Ciphertext layout: rounded(rounded_encode_size) || confirm_hash(32)
     let mut cstr = vec![0u8; params.ct_size];
     rq::encoding::round_and_encode_into(c, &mut cstr[..params.rounded_encode_size], params);
-    cstr[params.rounded_encode_size..].copy_from_slice(&confirm);
+    cstr[params.rounded_encode_size..].copy_from_slice(&confirm[..]);
 
     // Shared key: hash_session(1, r_enc, cstr)
-    let mut k = [0u8; 32];
+    let mut k = SecretBuffer::new([0u8; 32]);
     hash_session(&mut k, 1, r_enc, &cstr);
 
-    // Zeroize secret intermediates (whole frames, padding included). `pk_hash` is
-    // public and caller-owned; nothing to wipe for it. `c_buf` is still secret
-    // here because it contains the pre-encoding polynomial product.
-    crate::wipe::wipe(c_buf);
-    crate::wipe::wipe(r_enc_buf);
-    confirm.zeroize();
-
-    (cstr, k)
+    // The scratch and confirmation guards erase whole frames (including
+    // padding) on return or unwind. `pk_hash` is public and caller-owned.
+    (cstr, k.take())
 }
 
 /// Decapsulate a ciphertext with a secret key.
@@ -391,7 +383,7 @@ pub(crate) fn decapsulate_inner(
     let rho_end = rho_start + ses;
     let cache_start = rho_end;
 
-    let mut cache = [0u8; 32];
+    let mut cache = SecretBuffer::new([0u8; 32]);
     cache.copy_from_slice(&sk[cache_start..cache_start + 32]);
 
     // Decrypt: Rounded_decode, multiply by f, Rq_mult3, R3_fromRq, R3_mult by ginv
@@ -442,9 +434,9 @@ pub(crate) fn decapsulate_inner(
     scratch_array!(cnew_buf: [u8; MAX_CT]);
     let cnew = &mut cnew_buf[..params.ct_size];
     rq::encoding::round_and_encode_into(hr, &mut cnew[..params.rounded_encode_size], params);
-    let mut confirm = [0u8; 32];
+    let mut confirm = SecretBuffer::new([0u8; 32]);
     hash_confirm(&mut confirm, r_enc, &cache);
-    cnew[params.rounded_encode_size..].copy_from_slice(&confirm);
+    cnew[params.rounded_encode_size..].copy_from_slice(&confirm[..]);
 
     // Compare full ciphertexts (rounded + confirm hash)
     let mask = ciphertexts_diff_mask(cstr, cnew);
@@ -463,21 +455,10 @@ pub(crate) fn decapsulate_inner(
 
     // Hash session: prefix=1 on success (mask=0), prefix=0 on failure (mask=-1)
     let prefix = (1 + mask) as u8;
-    let mut k = [0u8; 32];
+    let mut k = SecretBuffer::new([0u8; 32]);
     hash_session(&mut k, prefix, selected, cstr);
 
-    // Zeroize secret intermediates (the whole stack frames, padding included).
-    crate::wipe::wipe(f_buf);
-    crate::wipe::wipe(ginv_buf);
-    cache.zeroize();
-    crate::wipe::wipe(cf_buf);
-    crate::wipe::wipe(t3_buf);
-    crate::wipe::wipe(r_buf);
-    crate::wipe::wipe(r_enc_buf);
-    crate::wipe::wipe(hr_buf);
-    crate::wipe::wipe(cnew_buf);
-    confirm.zeroize();
-    crate::wipe::wipe(selected_buf);
-
-    k
+    // Every scratch binding and fixed secret copy is guarded, so the entire
+    // decapsulation frame is erased on both ordinary return and unwinding.
+    k.take()
 }

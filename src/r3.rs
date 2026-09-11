@@ -4,7 +4,7 @@ pub mod mod3;
 mod vector;
 
 use crate::ct::{smaller_mask, swap_int};
-use crate::wipe::wipe;
+use crate::wipe::SecretBuffer;
 
 /// Reciprocal in R/3, dispatched: bitsliced divstep on x86_64/AVX2, the
 /// elimination form elsewhere. Same `(mask, r)` contract on both paths.
@@ -34,19 +34,19 @@ fn reciprocal_eliminate(s: &[i8], p: usize) -> (isize, Vec<i8>) {
     // upward — index p and below, the only entries ever read, are untouched by it.
     let pad = |len: usize| (len + 31) & !31;
 
-    let mut r = vec![0i8; p];
-    let mut f = vec![0i8; pad(p + 1)];
+    let mut r = SecretBuffer::new(vec![0i8; p]);
+    let mut f = SecretBuffer::new(vec![0i8; pad(p + 1)]);
     f[0] = -1;
     f[1] = -1;
     f[p] = 1;
 
-    let mut g = vec![0i8; pad(p + 1)];
+    let mut g = SecretBuffer::new(vec![0i8; pad(p + 1)]);
     g[..p].copy_from_slice(&s[..p]);
     let fg_len = f.len();
     let mut d = p as isize;
     let mut e = p as isize;
-    let mut u = vec![0i8; pad(loops + 1)];
-    let mut v = vec![0i8; pad(loops + 1)];
+    let mut u = SecretBuffer::new(vec![0i8; pad(loops + 1)]);
+    let mut v = SecretBuffer::new(vec![0i8; pad(loops + 1)]);
     let uv_cap = u.len();
     v[0] = 1;
 
@@ -73,12 +73,8 @@ fn reciprocal_eliminate(s: &[i8], p: usize) -> (isize, Vec<i8>) {
     }
 
     vector::product(&mut r, p, &u[p..], mod3::reciprocal(f[p]));
-    // The Euclidean state is derived from the secret input — wipe it before returning.
-    wipe(&mut f);
-    wipe(&mut g);
-    wipe(&mut u);
-    wipe(&mut v);
-    (smaller_mask(0, d), r)
+    // The guarded Euclidean state is erased on return and on panic unwinding.
+    (smaller_mask(0, d), r.take())
 }
 
 #[allow(unsafe_code)]
@@ -116,7 +112,7 @@ pub fn mult(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
 }
 
 fn mult_scalar(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
-    let mut fg = vec![0i8; p * 2 - 1];
+    let mut fg = SecretBuffer::new(vec![0i8; p * 2 - 1]);
     for i in 0..p {
         let mut r = 0i32;
         for j in 0..=i {
@@ -136,8 +132,8 @@ fn mult_scalar(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
         fg[i - p + 1] = mod3::freeze(fg[i - p + 1] as i32 + fg[i] as i32);
     }
     h[..p].copy_from_slice(&fg[..p]);
-    // At least one operand is secret at every call site — wipe the product scratch.
-    wipe(&mut fg);
+    // At least one operand is secret at every call site; the product guard
+    // erases the convolution on normal return and on unwinding.
 }
 
 /// Row-major schoolbook multiplication for R3 polynomials on x86_64, expanded once per
@@ -164,8 +160,8 @@ macro_rules! r3_mult_x86_kernel {
 
                 let fg_len = p * 2 - 1;
 
-                let mut f16 = vec![0i16; p];
-                let mut g_rev = vec![0i16; p];
+                let mut f16 = SecretBuffer::new(vec![0i16; p]);
+                let mut g_rev = SecretBuffer::new(vec![0i16; p]);
                 for i in 0..p {
                     f16[i] = f[i] as i16;
                     g_rev[i] = g[p - 1 - i] as i16;
@@ -173,7 +169,7 @@ macro_rules! r3_mult_x86_kernel {
 
                 // Raw i16 row sums (|sum| ≤ p ≤ 1277), padded with one zero so the fold below may
                 // read `fg[k + p]` unconditionally at `k = p - 1`.
-                let mut fg = vec![0i16; fg_len + 1];
+                let mut fg = SecretBuffer::new(vec![0i16; fg_len + 1]);
                 for (i, out) in fg[..fg_len].iter_mut().enumerate() {
                     let jlo = i.saturating_sub(p - 1);
                     let len = i.min(p - 1) - jlo + 1;
@@ -245,11 +241,8 @@ macro_rules! r3_mult_x86_kernel {
                 }
 
                 // At least one operand is secret at every production call
-                // site. Clear both widened operands and the convolution before
-                // their heap allocations are released.
-                wipe(&mut f16);
-                wipe(&mut g_rev);
-                wipe(&mut fg);
+                // site. Guards erase both widened operands and the convolution
+                // whether the kernel returns or unwinds.
             }
         }
     };
@@ -283,14 +276,14 @@ unsafe fn mult_neon(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
 
         let fg_len = p * 2 - 1;
 
-        let mut g_rev = vec![0i8; p];
+        let mut g_rev = SecretBuffer::new(vec![0i8; p]);
         for i in 0..p {
             g_rev[i] = g[p - 1 - i];
         }
 
         // Raw i16 row sums, padded with one zero so the fold below may read `fg[k + p]`
         // unconditionally at `k = p - 1`.
-        let mut fg = vec![0i16; fg_len + 1];
+        let mut fg = SecretBuffer::new(vec![0i16; fg_len + 1]);
         for (i, out) in fg[..fg_len].iter_mut().enumerate() {
             let jlo = i.saturating_sub(p - 1);
             let len = i.min(p - 1) - jlo + 1;
@@ -354,10 +347,8 @@ unsafe fn mult_neon(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
             h[k] = mod3::freeze(i32::from(fg[k]) + i32::from(fg[k + p]) + i32::from(fg[k + p - 1]));
         }
 
-        // `g_rev` and every raw convolution coefficient are derived from a
-        // secret operand. Clear them before releasing their allocations.
-        wipe(&mut g_rev);
-        wipe(&mut fg);
+        // `g_rev` and every raw convolution coefficient are guarded because
+        // they are derived from a secret operand.
     }
 }
 

@@ -1,6 +1,77 @@
 //! Fast volatile wiping of plain-integer scratch buffers.
 
+use core::ops::{Deref, DerefMut};
 use zeroize::{DefaultIsZeroes, Zeroize};
+
+/// Storage whose complete contents can be erased with [`wipe`].
+///
+/// Keeping this trait private to the crate restricts the drop guard below to
+/// the plain-integer arrays and vectors used for cryptographic intermediates.
+/// It deliberately does not become a general-purpose zeroization abstraction.
+pub(crate) trait WipeValue {
+    /// Erases every initialized element while preserving the container's shape.
+    fn wipe_value(&mut self);
+}
+
+impl<T: Zeroize + DefaultIsZeroes, const N: usize> WipeValue for [T; N] {
+    fn wipe_value(&mut self) {
+        wipe(self);
+    }
+}
+
+impl<T: Zeroize + DefaultIsZeroes> WipeValue for Vec<T> {
+    fn wipe_value(&mut self) {
+        wipe(self.as_mut_slice());
+    }
+}
+
+/// Owns a secret-derived integer buffer and erases it whenever the scope ends.
+///
+/// The guard covers normal returns and unwinding alike. Callers work through
+/// `DerefMut`, so adopting it does not add interior mutability or expose a
+/// separate cleanup protocol that can be forgotten on a new return path.
+pub(crate) struct SecretBuffer<T: WipeValue> {
+    /// The initialized array or vector whose shape remains stable until drop.
+    value: T,
+}
+
+impl<T: WipeValue> SecretBuffer<T> {
+    /// Wraps initialized secret storage in an unwind-safe erasure guard.
+    pub(crate) fn new(value: T) -> Self {
+        Self { value }
+    }
+
+    /// Moves the guarded value out while leaving an empty value to erase.
+    ///
+    /// This is reserved for successful ownership transfer into a public API
+    /// wrapper that assumes the zeroization responsibility itself.
+    pub(crate) fn take(&mut self) -> T
+    where
+        T: Default,
+    {
+        core::mem::take(&mut self.value)
+    }
+}
+
+impl<T: WipeValue> Deref for SecretBuffer<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+
+impl<T: WipeValue> DerefMut for SecretBuffer<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
+    }
+}
+
+impl<T: WipeValue> Drop for SecretBuffer<T> {
+    fn drop(&mut self) {
+        self.value.wipe_value();
+    }
+}
 
 /// Wipe a plain-integer buffer with volatile stores, as wide as the platform
 /// allows.
@@ -64,6 +135,16 @@ fn wipe_u64<T: Zeroize + DefaultIsZeroes>(buf: &mut [T]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dropping the guard normally must erase its complete backing value. This
+    /// direct trait check also pins shape-preserving vector wiping.
+    #[test]
+    fn guarded_storage_uses_shape_preserving_wipe() {
+        let mut bytes = vec![0xAAu8; 37];
+        bytes.wipe_value();
+        assert_eq!(bytes.len(), 37);
+        assert!(bytes.iter().all(|&byte| byte == 0));
+    }
 
     /// Every byte must be cleared regardless of where the wide interior starts,
     /// so exercise every offset and length across an alignment period.

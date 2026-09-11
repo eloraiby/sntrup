@@ -1034,13 +1034,12 @@ pub fn sort(x: &mut [i32], n: usize) {
         // n <= 256: pad to the next power of two with sentinels that sort to the
         // end, sort that, and copy back. The reference type-puns an
         // `int32x8[32]` for alignment; a plain array suffices here.
-        let mut y = [0x7fff_ffffi32; 256];
+        let mut y = crate::wipe::SecretBuffer::new([0x7fff_ffffi32; 256]);
         y[..n].copy_from_slice(&x[..n]);
-        sort_2power(&mut y, 0, 2 * q, false);
+        sort_2power(&mut y[..], 0, 2 * q, false);
         x[..n].copy_from_slice(&y[..n]);
-        // The padded sorting network contains the caller's secret random tags.
-        // Erase the complete frame, including sentinel padding, before returning.
-        crate::wipe::wipe(&mut y);
+        // The guard erases the caller's secret random tags and all sentinel
+        // padding on both normal return and unwinding.
         return;
     }
 

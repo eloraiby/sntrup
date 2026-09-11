@@ -26,7 +26,7 @@
     clippy::needless_range_loop
 )]
 
-use crate::wipe::wipe;
+use crate::wipe::SecretBuffer;
 use core::arch::x86_64::*;
 
 const Q: i16 = 4591;
@@ -241,14 +241,14 @@ macro_rules! prime_pass {
         // into it avoids copying 6 KB in and out per prime.
         // The transform owns all six tracks. Initializing the array keeps the
         // mutable reference valid before `good` overwrites every coefficient.
-        let mut fg = [0i16; 6 * 512];
+        let mut fg = SecretBuffer::new([0i16; 6 * 512]);
         good(&mut fg[..3 * 512], $f);
         good(&mut fg[3 * 512..], $g);
-        ntt512(&mut fg, 6, $qdata);
+        ntt512(&mut fg[..], 6, $qdata);
 
         // The pointwise loop overwrites all three tracks. Zero initialization
         // also provides deterministic padding if this invariant changes.
-        let mut hpad = [0i16; 3 * 512];
+        let mut hpad = SecretBuffer::new([0i16; 3 * 512]);
         let mut i = 0usize;
         while i < 512 {
             let f0 = $sq(_mm256_loadu_si256(fg.as_ptr().add(i) as *const __m256i));
@@ -277,14 +277,11 @@ macro_rules! prime_pass {
             i += 16;
         }
 
-        invntt512(&mut hpad, 3, $qdata);
+        invntt512(&mut hpad[..], 3, $qdata);
         ungood($out, &hpad[..]);
 
         // A prime pass processes secret polynomial material on every KEM path.
-        // Clear transform-domain operands and output scratch after `ungood`
-        // has copied the residue to the caller-owned result.
-        wipe(&mut fg);
-        wipe(&mut hpad);
+        // Both transform-domain guards erase their complete arrays on every exit.
     }};
 }
 
@@ -296,10 +293,17 @@ fn mult768(h: &mut [i16; 1536], f: &[i16; 768], g: &[i16; 768]) {
         // Each prime pass overwrites its complete residue array before the CRT
         // loop consumes it. Initialized storage avoids manufacturing references
         // to uninitialized integer values.
-        let mut h7681 = [0i16; 1536];
-        let mut h10753 = [0i16; 1536];
-        prime_pass!(f, g, &mut h7681, squeeze_7681, mulmod_7681, &QDATA_7681);
-        prime_pass!(f, g, &mut h10753, squeeze_10753, mulmod_10753, &QDATA_10753);
+        let mut h7681 = SecretBuffer::new([0i16; 1536]);
+        let mut h10753 = SecretBuffer::new([0i16; 1536]);
+        prime_pass!(f, g, &mut *h7681, squeeze_7681, mulmod_7681, &QDATA_7681);
+        prime_pass!(
+            f,
+            g,
+            &mut *h10753,
+            squeeze_10753,
+            mulmod_10753,
+            &QDATA_10753
+        );
 
         // CRT the two residues back to mod 4591.
         let mut i = 0usize;
@@ -318,9 +322,7 @@ fn mult768(h: &mut [i16; 1536], f: &[i16; 768], g: &[i16; 768]) {
             i += 16;
         }
 
-        // The residues reveal the secret product before reduction modulo q.
-        wipe(&mut h7681);
-        wipe(&mut h10753);
+        // The residue guards erase both representations of the secret product.
     }
 }
 
@@ -330,8 +332,8 @@ fn mult768(h: &mut [i16; 1536], f: &[i16; 768], g: &[i16; 768]) {
 fn mult768_3(h: &mut [i16; 1536], f: &[i16; 768], g: &[i16; 768]) {
     unsafe {
         // The prime pass overwrites the full residue array before conversion.
-        let mut h7681 = [0i16; 1536];
-        prime_pass!(f, g, &mut h7681, squeeze_7681, mulmod_7681, &QDATA_7681);
+        let mut h7681 = SecretBuffer::new([0i16; 1536]);
+        prime_pass!(f, g, &mut *h7681, squeeze_7681, mulmod_7681, &QDATA_7681);
         let mut i = 0usize;
         while i < 1536 {
             let u = mulmod_7681(
@@ -342,9 +344,7 @@ fn mult768_3(h: &mut [i16; 1536], f: &[i16; 768], g: &[i16; 768]) {
             i += 16;
         }
 
-        // The single-prime residue is an alternate representation of the
-        // secret product and must not survive the operation.
-        wipe(&mut h7681);
+        // The residue guard erases the alternate representation of the product.
     }
 }
 
@@ -371,8 +371,8 @@ pub fn mult3_761(h: &mut [i8], f: &[i8], g: &[i8]) {
         const P: usize = 761;
         // The transform works on 768 coefficients; inputs occupy the first P
         // positions and the initialized tail supplies the required zero padding.
-        let mut fp = [0i16; 768];
-        let mut gp = [0i16; 768];
+        let mut fp = SecretBuffer::new([0i16; 768]);
+        let mut gp = SecretBuffer::new([0i16; 768]);
         for k in 0..P {
             fp[k] = i16::from(f[k]);
             gp[k] = i16::from(g[k]);
@@ -383,12 +383,12 @@ pub fn mult3_761(h: &mut [i8], f: &[i8], g: &[i8]) {
         }
 
         // `mult768_3` overwrites every output coefficient.
-        let mut fg = [0i16; 1536];
+        let mut fg = SecretBuffer::new([0i16; 1536]);
         mult768_3(&mut fg, &fp, &gp);
 
         fg[0] -= fg[P - 1];
         // The reduction loop overwrites every complete SIMD block.
-        let mut out = [0i16; 768];
+        let mut out = SecretBuffer::new([0i16; 768]);
         let mut i = 0usize;
         while i < 768 {
             let a = _mm256_loadu_si256(fg.as_ptr().add(i) as *const __m256i);
@@ -401,11 +401,8 @@ pub fn mult3_761(h: &mut [i8], f: &[i8], g: &[i8]) {
         for k in 0..P {
             h[k] = out[k] as i8;
         }
-        // Both operands are secret at every call site — wipe the working buffers.
-        wipe(&mut fp);
-        wipe(&mut gp);
-        wipe(&mut fg);
-        wipe(&mut out);
+        // All four working arrays are guarded because both operands are secret
+        // at every call site.
     }
 }
 
@@ -416,9 +413,9 @@ pub fn mult761(h: &mut [i16], f: &[i16], g: &[i8]) {
         // Copy the exact 761-coefficient input into initialized transform
         // storage before any SIMD load. Loading directly from `f` in 16-lane
         // blocks would over-read its final nine-coefficient tail.
-        let mut fp = [0i16; 768];
+        let mut fp = SecretBuffer::new([0i16; 768]);
         fp[..P].copy_from_slice(f);
-        let mut gp = [0i16; 768];
+        let mut gp = SecretBuffer::new([0i16; 768]);
         let mut i = 0usize;
         while i < 768 {
             let x = _mm256_loadu_si256(fp.as_ptr().add(i) as *const __m256i);
@@ -438,7 +435,7 @@ pub fn mult761(h: &mut [i16], f: &[i16], g: &[i8]) {
         }
 
         // `mult768` overwrites every output coefficient.
-        let mut fg = [0i16; 1536];
+        let mut fg = SecretBuffer::new([0i16; 1536]);
         mult768(&mut fg, &fp, &gp);
 
         fg[0] -= fg[P - 1];
@@ -452,11 +449,8 @@ pub fn mult761(h: &mut [i16], f: &[i16], g: &[i8]) {
             i += 16;
         }
         h[..P].copy_from_slice(&fp[..P]);
-        // `g` is secret at every call site — wipe the operand copies and the
-        // product scratch.
-        wipe(&mut fp);
-        wipe(&mut gp);
-        wipe(&mut fg);
+        // All operand copies and product scratch are guarded because `g` is
+        // secret at every call site.
     }
 }
 

@@ -517,10 +517,8 @@ pub mod random {
         for (fv, &rv) in f.iter_mut().zip(r.iter()) {
             *fv = ((rv & 3) as i8) - 1;
         }
-        // The tagged randomness fully determines the secret polynomial — wipe both
-        // frames (padding included), at wide-store granularity.
-        crate::wipe::wipe(bytes_buf);
-        crate::wipe::wipe(r_buf);
+        // Both scratch declarations own unwind-safe guards; their complete
+        // padded frames are erased when this operation leaves scope.
     }
 }
 
