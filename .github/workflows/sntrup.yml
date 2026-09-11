@@ -36,12 +36,24 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Exercise the production dispatcher, including SIMD selected for the runner.
+          - name: native dispatch
+            features: serde
+          # Keep the portable implementation as both a supported fallback and a
+          # differential guard against regressions in architecture-specific code.
+          - name: forced scalar
+            features: serde,force-scalar
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
           toolchain: stable
-      - run: cargo test --features serde --benches --release
+      - name: Test (${{ matrix.name }})
+        run: cargo test --features ${{ matrix.features }} --all-targets --release
 
   feature-gates:
     runs-on: ubuntu-latest
