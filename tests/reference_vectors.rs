@@ -40,8 +40,10 @@ struct ReferenceOutputs {
 /// Recreates one independently generated reference transcript and compares
 /// generation, valid decapsulation, and invalid decapsulation with fixtures.
 fn reference_transcript<P: SntrupParams>(id: u8, expected: &ReferenceOutputs) {
-    let (encapsulation_key, decapsulation_key) =
-        SntrupKem::<P>::generate_key_deterministic(&[id; 32]);
+    // Conformance is defined by the random bytes supplied to key generation,
+    // not by this crate's parameter-separated deterministic convenience API.
+    let mut key_rng = rand_chacha::ChaCha20Rng::from_seed([id; 32]);
+    let (encapsulation_key, decapsulation_key) = SntrupKem::<P>::generate_key(&mut key_rng);
 
     let mut rng = rand_chacha::ChaCha20Rng::from_seed([id ^ 0x80; 32]);
     let (ciphertext, shared_secret) = encapsulation_key.encapsulate(&mut rng);

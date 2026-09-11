@@ -28,9 +28,11 @@ The repository checks conformance at three levels:
   tests under capability-asserting emulation, and sanitizers on both native
   architectures.
 
-`generate_key_deterministic` is an extension provided by this crate. It expands
-a 32-byte seed with `ChaCha20Rng`; it is not the NIST KAT deterministic random
-bit generator and its seed cannot be substituted for a NIST `.rsp` seed.
+`generate_key_deterministic` is an extension provided by this crate. It derives
+a ChaCha20 seed as `SHA-512("sntrup deterministic key generation v1" || 0x00 ||
+parameter_name || 0x00 || seed)[..32]`, separating equal caller seeds across
+parameter sets. It is not the NIST KAT deterministic random bit generator and
+its seed cannot be substituted for a NIST `.rsp` seed.
 
 ## Input validation and rejection behavior
 

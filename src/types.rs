@@ -682,6 +682,29 @@ impl<P: SntrupParams> ZeroizeOnDrop for SharedSecret<P> {}
 // KEM operations (feature-gated)
 // ---------------------------------------------------------------------------
 
+/// Derives the parameter-specific ChaCha seed used by deterministic keygen.
+///
+/// The versioned label fixes the extension's byte-level contract, while the
+/// parameter name prevents one caller seed from selecting correlated random
+/// streams in different Streamlined NTRU Prime parameter sets.
+#[cfg(feature = "kgen")]
+fn derive_deterministic_keygen_seed<P: SntrupParams>(out: &mut [u8; 32], seed: &[u8; 32]) {
+    use sha2::{Digest, Sha512};
+
+    const LABEL: &[u8] = b"sntrup deterministic key generation v1";
+    let mut hasher = Sha512::new();
+    hasher.update(LABEL);
+    hasher.update([0]);
+    hasher.update(P::NAME.as_bytes());
+    hasher.update([0]);
+    hasher.update(seed);
+    let mut digest = hasher.finalize();
+    out.copy_from_slice(&digest[..32]);
+    // The lower half has moved to guarded caller storage; erase the complete
+    // digest so neither half of the seed derivation remains in this frame.
+    digest.zeroize();
+}
+
 #[cfg(feature = "kgen")]
 impl<P: SntrupParams> SntrupKem<P> {
     /// Generate a Streamlined NTRU Prime key pair.
@@ -697,8 +720,9 @@ impl<P: SntrupParams> SntrupKem<P> {
 
     /// Generate a key pair deterministically from a 32-byte seed.
     ///
-    /// The seed is expanded via ChaCha20Rng to derive the full key pair.
-    /// Identical seeds always produce identical key pairs.
+    /// A versioned SHA-512 derivation separates the seed by parameter-set name,
+    /// then ChaCha20Rng expands it into the key-generation random stream.
+    /// Identical seed and parameter-set pairs always produce identical keys.
     /// This is a crate-specific convenience API, not the deterministic random
     /// bit generator used by NIST or upstream known-answer test formats.
     ///
@@ -710,7 +734,9 @@ impl<P: SntrupParams> SntrupKem<P> {
         seed: &[u8; 32],
     ) -> (EncapsulationKey<P>, DecapsulationKey<P>) {
         use rand::SeedableRng;
-        let mut rng = rand_chacha::ChaCha20Rng::from_seed(*seed);
+        let mut expanded_seed = SecretBuffer::new([0u8; 32]);
+        derive_deterministic_keygen_seed::<P>(&mut expanded_seed, seed);
+        let mut rng = rand_chacha::ChaCha20Rng::from_seed(*expanded_seed);
         Self::generate_key(&mut rng)
     }
 }

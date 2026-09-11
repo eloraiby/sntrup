@@ -303,6 +303,46 @@ deterministic_keygen_test!(deterministic_keygen_1013, Sntrup1013);
 #[cfg(feature = "kgen")]
 deterministic_keygen_test!(deterministic_keygen_1277, Sntrup1277);
 
+/// A caller seed must select independent deterministic streams for different
+/// parameter-set domains.
+#[cfg(feature = "kgen")]
+#[test]
+fn deterministic_keygen_is_parameter_separated() {
+    let seed = [0x73; 32];
+    let public_keys = [
+        Sntrup653::generate_key_deterministic(&seed)
+            .0
+            .as_ref()
+            .to_vec(),
+        Sntrup761::generate_key_deterministic(&seed)
+            .0
+            .as_ref()
+            .to_vec(),
+        Sntrup857::generate_key_deterministic(&seed)
+            .0
+            .as_ref()
+            .to_vec(),
+        Sntrup953::generate_key_deterministic(&seed)
+            .0
+            .as_ref()
+            .to_vec(),
+        Sntrup1013::generate_key_deterministic(&seed)
+            .0
+            .as_ref()
+            .to_vec(),
+        Sntrup1277::generate_key_deterministic(&seed)
+            .0
+            .as_ref()
+            .to_vec(),
+    ];
+
+    for (index, left) in public_keys.iter().enumerate() {
+        for right in &public_keys[index + 1..] {
+            assert_ne!(left, right, "parameter domains reused a keygen stream");
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Extract encapsulation key from decapsulation key
 // ---------------------------------------------------------------------------

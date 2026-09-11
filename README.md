@@ -138,9 +138,11 @@ assert_eq!(ek1, ek2);
 assert_eq!(dk1, dk2);
 ```
 
-This deterministic API is a crate-specific ChaCha20 expansion. It is useful for
-reproducible applications and tests, but it is not the NIST KAT DRBG interface
-and cannot consume NIST `.rsp` seed fields directly.
+This deterministic API is a crate-specific, versioned SHA-512 derivation
+followed by ChaCha20 expansion. The derivation includes the parameter-set name,
+so reusing a caller seed across parameter sets does not reuse the same random
+stream. It is useful for reproducible applications and tests, but it is not the
+NIST KAT DRBG interface and cannot consume NIST `.rsp` seed fields directly.
 
 ### Serialization with serde
 
