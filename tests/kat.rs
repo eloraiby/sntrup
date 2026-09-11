@@ -3,7 +3,7 @@
 
 use sntrup::*;
 
-/// IETF draft-josefsson-ntruprime-streamlined-00, test vector 0 (sntrup761).
+/// Historical draft-josefsson-ntruprime-streamlined-00 algorithm vector 0.
 #[test]
 fn kat0_decapsulation_761() {
     let sk_hex = include_str!("data/kat0_sk.hex");
@@ -29,7 +29,7 @@ fn kat0_decapsulation_761() {
     assert_eq!(ss.as_ref(), &ss_expected[..], "KAT0 shared secret mismatch");
 }
 
-/// IETF draft-josefsson-ntruprime-streamlined-00, test vector 1 (sntrup761).
+/// Historical draft-josefsson-ntruprime-streamlined-00 algorithm vector 1.
 #[test]
 fn kat1_decapsulation_761() {
     let sk_hex = include_str!("data/kat1_sk.hex");

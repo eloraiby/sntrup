@@ -12,29 +12,29 @@ NTRU Prime is a lattice-based cryptosystem aiming to improve the security of lat
 
 Please read the [warnings](#warnings) before use.
 
-The algorithm was authored by Daniel J. Bernstein, Chitchanok Chuengsatiansup, Tanja Lange & Christine van Vredendaal. This implementation is aligned with the [PQClean reference](https://github.com/PQClean/PQClean/tree/master/crypto_kem) and verified against the [IETF draft](https://datatracker.ietf.org/doc/draft-josefsson-ntruprime-streamlined/) KAT vectors.
+The algorithm was authored by Daniel J. Bernstein, Chitchanok Chuengsatiansup, Tanja Lange & Christine van Vredendaal. This implementation follows the [NTRU Prime Round 3 specification](https://ntruprime.cr.yp.to/nist/ntruprime-20201007.pdf). It is checked against the current upstream `libntruprime` implementation for all six parameter sets and against the legacy sntrup761 vectors that preceded [RFC 9941](https://www.rfc-editor.org/rfc/rfc9941.html). RFC 9941 specifies the hybrid `sntrup761x25519-sha512` SSH construction as an Informational RFC; it is not a standalone standard for all six KEMs.
 
 ## Parameter Sets
 
-| Parameter Set | NIST Level | P    | Q    | W   | Public Key | Secret Key | Ciphertext | Shared Secret |
+| Parameter Set | Claimed NIST category | P    | Q    | W   | Public Key | Secret Key | Ciphertext | Shared Secret |
 |---------------|:----------:|-----:|-----:|----:|-----------:|-----------:|-----------:|--------------:|
 | sntrup653     | 1          |  653 | 4621 | 288 |        994 |       1518 |        897 |            32 |
 | sntrup761     | 2          |  761 | 4591 | 286 |       1158 |       1763 |       1039 |            32 |
 | sntrup857     | 3          |  857 | 5167 | 322 |       1322 |       1999 |       1184 |            32 |
 | sntrup953     | 4          |  953 | 6343 | 396 |       1505 |       2254 |       1349 |            32 |
-| sntrup1013    | 5          | 1013 | 7177 | 448 |       1623 |       2417 |       1455 |            32 |
+| sntrup1013    | 4          | 1013 | 7177 | 448 |       1623 |       2417 |       1455 |            32 |
 | sntrup1277    | 5          | 1277 | 7879 | 492 |       2067 |       3059 |       1847 |            32 |
 
-All key and ciphertext sizes are in bytes. Sizes are fixed per parameter set using a canonical encoding enforced by the code.
+All key and ciphertext sizes are in bytes. Key imports enforce canonical encodings and private-key cache consistency. Ciphertext imports intentionally enforce only the fixed length so invalid ciphertexts reach implicit rejection without creating a parser oracle.
 
-> **Note:** sntrup653 (NIST Level 1) is recommended for research and testing only. Prefer sntrup761 or higher for production use.
+> **Note:** sntrup653 (claimed NIST Category 1) is recommended for research and testing only. Prefer sntrup761 or higher for production use.
 
 ## Features
 
-- Pure Rust, `no_std`-compatible, dependency-minimal
+- Pure Rust and dependency-minimal; the current implementation requires `std`
 - All six parameter sizes: sntrup653, sntrup761, sntrup857, sntrup953, sntrup1013, sntrup1277
-- IND-CCA2 secure with implicit rejection
-- Constant-time operations throughout (branchless sort, constant-time comparison and selection)
+- Targets IND-CCA2 security with implicit rejection
+- Data-independent decapsulation design (branchless sort, constant-time comparison and selection), subject to the platform and compiler caveats in [SECURITY.md](SECURITY.md)
 - SIMD acceleration with automatic run-time detection: AVX-512 and AVX2 (plus AVX-VNNI where present) on x86_64, NEON on aarch64
 - Optional `serde` support via the `serde` feature
 - Deterministic key generation from a 32-byte seed
@@ -48,8 +48,6 @@ The KEM API is split into three default features so downstream crates can pull i
 | `kgen`  | **yes** | Key generation: `SntrupKem::generate_key`, `SntrupKem::generate_key_deterministic` |
 | `ecap`  | **yes** | Encapsulation: `EncapsulationKey::encapsulate` |
 | `dcap`  | **yes** | Decapsulation: `DecapsulationKey::decapsulate` |
-| `alloc` | no | Allocator-dependent APIs |
-| `std`   | no | Standard-library integration; implies `alloc` |
 | `force-scalar` | no | Compile out every SIMD kernel and use the portable scalar code paths only |
 | `kem`   | no | Implements the [`kem`](https://docs.rs/kem) crate's traits (`Encapsulate`, `Decapsulate`, `Kem`, ...) so this crate can be used generically alongside other KEMs. See [`sntrup::kem`](src/kem.rs) and `examples/kem_traits.rs`. |
 | `serde` | no | Enables `Serialize`/`Deserialize` for all key and ciphertext types (via `serdect` for constant-time hex encoding) |
@@ -140,6 +138,10 @@ assert_eq!(ek1, ek2);
 assert_eq!(dk1, dk2);
 ```
 
+This deterministic API is a crate-specific ChaCha20 expansion. It is useful for
+reproducible applications and tests, but it is not the NIST KAT DRBG interface
+and cannot consume NIST `.rsp` seed fields directly.
+
 ### Serialization with serde
 
 Enable the `serde` feature:
@@ -173,7 +175,7 @@ let (ek, dk) = Sntrup761::generate_key(&mut rng);
 // Serialize to bytes
 let ek_bytes: &[u8] = ek.as_ref();
 
-// Deserialize from bytes (validates size)
+// Deserialize from bytes (validates size and canonical key encoding)
 let ek2 = EncapsulationKey::<Sntrup761Params>::try_from(ek_bytes).unwrap();
 assert_eq!(ek, ek2);
 ```
@@ -224,19 +226,21 @@ For `wasm32-wasi` (or `wasm32-wasip1`), the `js` feature is **not** needed since
 
 - **IND-CCA2 security** via implicit rejection: decapsulation always returns a shared key. On failure, a pseudorandom key is derived from secret randomness (`rho`), making it indistinguishable from a valid key to an attacker.
 - **Hash domain separation**: all hashes use prefix bytes (following the NTRU Prime specification).
-- **Constant-time operations**: branchless sorting (djbsort), constant-time weight checks, constant-time ciphertext comparison, and constant-time selection in decapsulation.
-- **Zeroization**: secret key material is zeroized on drop.
+- **Side-channel-conscious operations**: branchless sorting (djbsort), fixed-schedule weight checks, constant-time ciphertext comparison, and constant-time selection in decapsulation. This is an implementation intent, not a universal timing guarantee; see [SECURITY.md](SECURITY.md).
+- **Zeroization**: private-key and shared-secret wrappers erase their allocations on drop, and secret-derived internal workspaces are erased before release. Copies exported by callers remain caller-owned.
+- **Conformance tests**: compact full-transcript fixtures pin byte-for-byte agreement with `libntruprime` for every parameter set, while the original sntrup761 draft vectors remain checked separately.
 
 ## Warnings
 
 #### Implementation
 
-This implementation has not undergone any security auditing and while care has been taken no guarantees can be made for either correctness or the constant time running of the underlying functions. **Please use at your own risk.**
+This branch incorporates an implementation security audit and its memory-safety, validation, dependency, and test-coverage fixes. It has not undergone an independent third-party cryptographic audit or formal side-channel validation. Review [SECURITY.md](SECURITY.md) before production deployment.
 
 Secret-derived heap temporaries (multiply scratch, Euclidean-inversion state, sampling
 randomness, hash intermediates) are wiped with the [`zeroize`](https://docs.rs/zeroize) crate
-before being freed. One documented exception: `generate_key_deterministic`'s ChaCha20 RNG state
-cannot be wiped because `rand_chacha` offers no zeroization support.
+before being freed. Known erasure and timing limitations, including
+`generate_key_deterministic`'s unwiped ChaCha20 state, are documented in
+[SECURITY.md](SECURITY.md).
 
 #### Algorithm
 

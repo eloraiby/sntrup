@@ -23,6 +23,9 @@ fn session_key_to_vec(mut key: [u8; 32]) -> Vec<u8> {
 /// Generate a Streamlined NTRU Prime key pair.
 ///
 /// Returns `(pk_bytes, sk_bytes)` as `Vec<u8>`.
+///
+/// The retry count depends on how many random `g` candidates are singular. It
+/// is therefore not a constant-time operation; see `SECURITY.md`.
 #[cfg(feature = "kgen")]
 pub(crate) fn keygen(params: &SntrupParameters, rng: &mut impl CryptoRng) -> (Vec<u8>, Vec<u8>) {
     let p = params.p;

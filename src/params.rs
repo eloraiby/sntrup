@@ -188,7 +188,7 @@ sntrup_params_marker!(
     1518,
     897,
     SNTRUP653,
-    "sntrup653 parameter marker (NIST Level 1, 128-bit security).\n\n**Not recommended for production use.** Prefer [`Sntrup761Params`] or higher."
+    "sntrup653 parameter marker (claimed NIST Category 1).\n\n**Not recommended for production use.** Prefer [`Sntrup761Params`] or higher."
 );
 sntrup_params_marker!(
     Sntrup761Params,
@@ -197,7 +197,7 @@ sntrup_params_marker!(
     1763,
     1039,
     SNTRUP761,
-    "sntrup761 parameter marker (NIST Level 2, 128-bit+ security)."
+    "sntrup761 parameter marker (claimed NIST Category 2)."
 );
 sntrup_params_marker!(
     Sntrup857Params,
@@ -206,7 +206,7 @@ sntrup_params_marker!(
     1999,
     1184,
     SNTRUP857,
-    "sntrup857 parameter marker (NIST Level 3, 192-bit security)."
+    "sntrup857 parameter marker (claimed NIST Category 3)."
 );
 sntrup_params_marker!(
     Sntrup953Params,
@@ -215,7 +215,7 @@ sntrup_params_marker!(
     2254,
     1349,
     SNTRUP953,
-    "sntrup953 parameter marker (NIST Level 4, 192-bit+ security)."
+    "sntrup953 parameter marker (claimed NIST Category 4)."
 );
 sntrup_params_marker!(
     Sntrup1013Params,
@@ -224,7 +224,7 @@ sntrup_params_marker!(
     2417,
     1455,
     SNTRUP1013,
-    "sntrup1013 parameter marker (NIST Level 5, 256-bit security)."
+    "sntrup1013 parameter marker (claimed NIST Category 4)."
 );
 sntrup_params_marker!(
     Sntrup1277Params,
@@ -233,5 +233,5 @@ sntrup_params_marker!(
     3059,
     1847,
     SNTRUP1277,
-    "sntrup1277 parameter marker (NIST Level 5, 256-bit security)."
+    "sntrup1277 parameter marker (claimed NIST Category 5)."
 );

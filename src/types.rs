@@ -7,6 +7,9 @@ use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
 /// Streamlined NTRU Prime encapsulation key (public key).
+///
+/// Byte imports reject non-canonical variable-radix encodings. Keys generated
+/// by this crate and conforming implementations are canonical by construction.
 #[derive(Clone)]
 pub struct EncapsulationKey<P: SntrupParams> {
     bytes: Vec<u8>,
@@ -20,6 +23,10 @@ pub struct EncapsulationKey<P: SntrupParams> {
 }
 
 /// Streamlined NTRU Prime decapsulation key (secret key).
+///
+/// Byte imports validate the two packed ternary fields, the embedded public
+/// key's canonical encoding, and its cached hash. Import validation does not
+/// prove that all fields came from the same key-generation execution.
 #[derive(Clone)]
 pub struct DecapsulationKey<P: SntrupParams> {
     bytes: Vec<u8>,
@@ -34,6 +41,10 @@ pub struct DecapsulationKey<P: SntrupParams> {
 }
 
 /// Streamlined NTRU Prime ciphertext.
+///
+/// Imports enforce the parameter set's fixed length but intentionally accept
+/// arbitrary contents. Decapsulation must handle malformed ciphertexts through
+/// implicit rejection rather than expose a separate validation oracle.
 #[derive(Clone)]
 pub struct Ciphertext<P: SntrupParams> {
     bytes: Vec<u8>,
@@ -41,6 +52,9 @@ pub struct Ciphertext<P: SntrupParams> {
 }
 
 /// Streamlined NTRU Prime shared secret.
+///
+/// Its allocation is erased on drop. Callers remain responsible for copies
+/// made through [`AsRef`] or serialization.
 #[derive(Clone)]
 pub struct SharedSecret<P: SntrupParams> {
     bytes: Vec<u8>,
@@ -612,6 +626,8 @@ impl<P: SntrupParams> SntrupKem<P> {
     ///
     /// The seed is expanded via ChaCha20Rng to derive the full key pair.
     /// Identical seeds always produce identical key pairs.
+    /// This is a crate-specific convenience API, not the deterministic random
+    /// bit generator used by NIST or upstream known-answer test formats.
     ///
     /// Note: `rand_chacha` offers no zeroization support, so the RNG's internal state (which
     /// contains the seed) is dropped without being wiped when this returns. Callers with

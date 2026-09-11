@@ -42,6 +42,12 @@ pub use crate::{
     Sntrup1277Params,
 };
 
+/// Copies a correctly sized byte slice into the fixed representation required
+/// by the `kem` traits.
+///
+/// For shared keys and exported private keys the returned array becomes the
+/// caller's secret copy; callers can explicitly invoke `Zeroize` because this
+/// crate enables `hybrid-array`'s zeroization support.
 fn array_from_slice<U: ArraySize>(bytes: &[u8]) -> Array<u8, U> {
     let mut array = Array::default();
     array.copy_from_slice(bytes);
@@ -140,6 +146,10 @@ impl<P: KemSizes> TryKeyInit for DecapsulationKey<P> {
 }
 
 impl<P: KemSizes> KeyExport for DecapsulationKey<P> {
+    /// Exports a new private-key copy.
+    ///
+    /// The trait requires a plain fixed array, so the caller owns erasure of
+    /// the returned bytes (for example with `zeroize::Zeroize`).
     fn to_bytes(&self) -> Key<Self> {
         array_from_slice(self.key.as_ref())
     }
@@ -176,6 +186,8 @@ where
         let Ok(ct) = crate::Ciphertext::<P>::try_from(ct.as_slice()) else {
             return SharedKey::<P>::default();
         };
+        // The temporary wrapper wipes itself on drop after the trait-owned
+        // output copy has been created.
         array_from_slice(self.key.decapsulate(&ct).as_ref())
     }
 }
@@ -195,6 +207,8 @@ where
         // implements `CryptoRng` via rand_core's blanket impl regardless of whether `R` itself
         // is `Sized`, and a reference is always `Sized`.
         let (ct, ss) = self.0.encapsulate(&mut rng);
+        // `ss` wipes its allocation after this required fixed-array copy; the
+        // returned trait value is owned by the caller.
         (array_from_slice(ct.as_ref()), array_from_slice(ss.as_ref()))
     }
 }

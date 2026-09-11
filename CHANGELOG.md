@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Compact, independently generated `libntruprime` transcript fixtures for all
+  six parameter sets, plus AddressSanitizer and RustSec CI gates.
+- Canonical public-key import validation and structural private-key validation,
+  including the embedded public-key hash.
+- `TryFrom` conversions for shared secrets and a dedicated security document
+  covering conformance, timing, erasure, and production deployment boundaries.
+
+### Changed
+
+- CI actions are pinned to immutable commits, test fixtures are included in the
+  published package, and the yanked `chacha20` 0.10.0 lockfile entry is updated.
+- Documentation now identifies sntrup1013 as claimed NIST Category 4, states
+  the crate's actual `std` requirement, and distinguishes the Round 3 KEM
+  specification from the Informational hybrid-SSH RFC.
+- Variable-radix decode plans use deterministic, bounded cache slots instead of
+  a race-sensitive search with a leaking overflow fallback.
+
+### Fixed
+
+- An AVX2 load at the end of a 761-coefficient input no longer reads 14 bytes
+  beyond an exact-length allocation.
+- Scratch arrays are valid, initialized Rust values rather than references
+  created over uninitialized `MaybeUninit` storage.
+- Secret NTT residues, SIMD products, codec state, session-key conversion
+  arrays, hash state, and malformed owned imports are erased on all completed
+  paths.
+- Barrett regression tests now exercise the constants actually configured for
+  each parameter set, and the maximum ciphertext scratch bound no longer
+  counts the confirmation hash twice.
+
 ## [0.4.0] - 2026-08-05
 
 ### Added
@@ -107,6 +141,7 @@ Initial release: Streamlined NTRU Prime KEM for all six parameter sets (sntrup65
 sntrup1277), aligned with the PQClean reference and verified against the IETF draft KAT
 vectors.
 
+[Unreleased]: https://github.com/mikelodder7/sntrup/compare/v0.4.0...HEAD
 [0.4.0]: https://github.com/mikelodder7/sntrup/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/mikelodder7/sntrup/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/mikelodder7/sntrup/compare/v0.2.0...v0.2.1
