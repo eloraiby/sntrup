@@ -279,6 +279,12 @@ macro_rules! prime_pass {
 
         invntt512(&mut hpad, 3, $qdata);
         ungood($out, &hpad[..]);
+
+        // A prime pass processes secret polynomial material on every KEM path.
+        // Clear transform-domain operands and output scratch after `ungood`
+        // has copied the residue to the caller-owned result.
+        wipe(&mut fg);
+        wipe(&mut hpad);
     }};
 }
 
@@ -311,6 +317,10 @@ fn mult768(h: &mut [i16; 1536], f: &[i16; 768], g: &[i16; 768]) {
             _mm256_storeu_si256(h.as_mut_ptr().add(i) as *mut __m256i, t);
             i += 16;
         }
+
+        // The residues reveal the secret product before reduction modulo q.
+        wipe(&mut h7681);
+        wipe(&mut h10753);
     }
 }
 
@@ -331,6 +341,10 @@ fn mult768_3(h: &mut [i16; 1536], f: &[i16; 768], g: &[i16; 768]) {
             _mm256_storeu_si256(h.as_mut_ptr().add(i) as *mut __m256i, u);
             i += 16;
         }
+
+        // The single-prime residue is an alternate representation of the
+        // secret product and must not survive the operation.
+        wipe(&mut h7681);
     }
 }
 

@@ -243,6 +243,13 @@ macro_rules! r3_mult_x86_kernel {
                         i32::from(fg[k]) + i32::from(fg[k + p]) + i32::from(fg[k + p - 1]),
                     );
                 }
+
+                // At least one operand is secret at every production call
+                // site. Clear both widened operands and the convolution before
+                // their heap allocations are released.
+                wipe(&mut f16);
+                wipe(&mut g_rev);
+                wipe(&mut fg);
             }
         }
     };
@@ -346,6 +353,11 @@ unsafe fn mult_neon(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
         for k in 1..p {
             h[k] = mod3::freeze(i32::from(fg[k]) + i32::from(fg[k + p]) + i32::from(fg[k + p - 1]));
         }
+
+        // `g_rev` and every raw convolution coefficient are derived from a
+        // secret operand. Clear them before releasing their allocations.
+        wipe(&mut g_rev);
+        wipe(&mut fg);
     }
 }
 

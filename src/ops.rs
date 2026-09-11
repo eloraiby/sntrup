@@ -8,6 +8,18 @@ use crate::{r3, utils, zx};
 use rand::CryptoRng;
 use zeroize::Zeroize;
 
+/// Copies a fixed-size session key into its owned API representation and
+/// clears the temporary array before returning.
+///
+/// Keeping this transition in one helper prevents encapsulation and
+/// decapsulation from silently leaving identical key bytes in their stack
+/// frames after converting to `Vec<u8>`.
+fn session_key_to_vec(mut key: [u8; 32]) -> Vec<u8> {
+    let bytes = key.to_vec();
+    key.zeroize();
+    bytes
+}
+
 /// Generate a Streamlined NTRU Prime key pair.
 ///
 /// Returns `(pk_bytes, sk_bytes)` as `Vec<u8>`.
@@ -71,7 +83,7 @@ pub(crate) fn encaps(
     // Zeroize secret intermediate
     r.zeroize();
 
-    (ct, ss.to_vec())
+    (ct, session_key_to_vec(ss))
 }
 
 /// Decapsulate with a secret key.
@@ -80,5 +92,5 @@ pub(crate) fn encaps(
 #[cfg(feature = "dcap")]
 pub(crate) fn decaps(sk: &[u8], h: &[i16], ct: &[u8], params: &SntrupParameters) -> Vec<u8> {
     let ss = utils::decapsulate_inner(ct, sk, h, params);
-    ss.to_vec()
+    session_key_to_vec(ss)
 }

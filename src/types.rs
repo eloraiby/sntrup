@@ -283,8 +283,37 @@ impl<P: SntrupParams> TryFrom<&[u8]> for DecapsulationKey<P> {
 
 impl<P: SntrupParams> TryFrom<Vec<u8>> for DecapsulationKey<P> {
     type Error = Error;
-    fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+    fn try_from(mut bytes: Vec<u8>) -> Result<Self, Self::Error> {
+        if bytes.len() != P::SK_BYTES {
+            let actual = bytes.len();
+            // An owned import buffer is caller-supplied secret material even
+            // when malformed. Wipe it before returning the validation error.
+            bytes.zeroize();
+            return Err(Error::InvalidSize {
+                expected: P::SK_BYTES,
+                actual,
+            });
+        }
+
+        // Transfer the allocation directly into the key. This avoids creating
+        // a second secret copy that would otherwise be dropped unwiped.
+        Ok(Self::from_vec(bytes))
+    }
+}
+
+impl<P: SntrupParams> TryFrom<&Vec<u8>> for DecapsulationKey<P> {
+    type Error = Error;
+    fn try_from(bytes: &Vec<u8>) -> Result<Self, Self::Error> {
         Self::try_from(bytes.as_slice())
+    }
+}
+
+impl<P: SntrupParams> TryFrom<Box<[u8]>> for DecapsulationKey<P> {
+    type Error = Error;
+    fn try_from(bytes: Box<[u8]>) -> Result<Self, Self::Error> {
+        // `into_vec` reuses the boxed allocation; the owned `Vec` path then
+        // either installs it in the key or wipes it on a size error.
+        Self::try_from(bytes.into_vec())
     }
 }
 
@@ -414,9 +443,12 @@ impl<P: SntrupParams> DecapsulationKey<P> {
 mod serde_impl {
     use super::*;
 
-    /// Generate `Serialize`/`Deserialize` for a byte-wrapper type. Deserialization
-    /// validates that the decoded length matches the parameter set's fixed size,
-    /// rejecting (rather than silently zero-padding) short or oversized input.
+    /// Generate `Serialize`/`Deserialize` for a byte-wrapper type.
+    ///
+    /// Deserialization validates the parameter set's fixed size and keeps the
+    /// temporary allocation in `Zeroizing` storage. That policy is harmless for
+    /// public values and ensures malformed private keys or shared secrets are
+    /// erased on every error path.
     macro_rules! impl_serde {
         ($ty:ident, $size:ident) => {
             impl<P: SntrupParams> serde::Serialize for $ty<P> {
@@ -427,8 +459,8 @@ mod serde_impl {
 
             impl<'de, P: SntrupParams> serde::Deserialize<'de> for $ty<P> {
                 fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-                    let mut buf = vec![0u8; P::$size];
-                    let decoded = serdect::slice::deserialize_hex_or_bin(&mut buf, d)?;
+                    let mut buf = zeroize::Zeroizing::new(vec![0u8; P::$size]);
+                    let decoded = serdect::slice::deserialize_hex_or_bin(buf.as_mut_slice(), d)?;
                     if decoded.len() != P::$size {
                         return Err(serde::de::Error::invalid_length(
                             decoded.len(),
@@ -440,7 +472,10 @@ mod serde_impl {
                             ),
                         ));
                     }
-                    Ok(Self::from_vec(buf))
+                    // Move the validated allocation into the wrapper. `buf`
+                    // retains an empty vector, so its zeroizing drop cannot
+                    // erase the successfully imported value.
+                    Ok(Self::from_vec(core::mem::take(&mut *buf)))
                 }
             }
         };

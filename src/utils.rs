@@ -344,7 +344,9 @@ pub(crate) fn create_cipher(
     hash_session(&mut k, 1, r_enc, &cstr);
 
     // Zeroize secret intermediates (whole frames, padding included). `pk_hash` is
-    // public and caller-owned; nothing to wipe for it.
+    // public and caller-owned; nothing to wipe for it. `c_buf` is still secret
+    // here because it contains the pre-encoding polynomial product.
+    crate::wipe::wipe(c_buf);
     crate::wipe::wipe(r_enc_buf);
     confirm.zeroize();
 
