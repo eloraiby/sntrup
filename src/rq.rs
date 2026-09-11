@@ -210,10 +210,9 @@ pub fn round3(h: &mut [i16], params: &SntrupParameters) {
 pub fn mult(h: &mut [i16], f: &[i16], g: &[i8], params: &SntrupParameters) {
     #[cfg(all(target_arch = "x86_64", not(feature = "force-scalar")))]
     {
-        // The NTT module selects a 3x512 Good or twisted 4x512 machine for every
-        // parameter set through p = 1013. The widest set retains schoolbook
-        // dispatch until its 5x512 outer convolution is available.
-        if matches!(params.p, 653 | 761 | 857 | 953 | 1013) && crate::cpu::has_avx2() {
+        // The NTT module selects a 3x512 Good, twisted 4x512, or 5x512 Good
+        // machine according to the sealed parameter set.
+        if matches!(params.p, 653 | 761 | 857 | 953 | 1013 | 1277) && crate::cpu::has_avx2() {
             // SAFETY: AVX2 support confirmed by has_avx2()
             unsafe {
                 return ntt::mult(h, f, g, params);
@@ -749,15 +748,15 @@ mod tests {
         if !crate::cpu::has_avx2() {
             return;
         }
-        for params in &all_params()[..5] {
+        for params in all_params() {
             let p = params.p;
             for seed in 0..8u64 {
                 let (f, g) = random_case(params, seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
                 let mut want = vec![0i16; p];
                 mult_scalar(&mut want, &f, &g, params);
                 let mut got = vec![0i16; p];
-                // SAFETY: AVX2 was confirmed above, and the first five sealed
-                // parameter entries are exactly the currently supported sets.
+                // SAFETY: AVX2 was confirmed above, and every sealed parameter
+                // entry has an NTT dispatcher arm.
                 unsafe { ntt::mult(&mut got, &f, &g, params) };
                 assert_eq!(got, want, "ntt vs scalar: p={p} random seed={seed}");
             }

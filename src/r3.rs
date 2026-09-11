@@ -81,9 +81,10 @@ fn reciprocal_eliminate(s: &[i8], p: usize) -> (isize, Vec<i8>) {
 pub fn mult(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
     #[cfg(all(target_arch = "x86_64", not(feature = "force-scalar")))]
     {
-        // The NTT module selects the same 3x512 or twisted 4x512 machine as
-        // rq::mult, using one prime because ternary coefficients are bounded.
-        if matches!(p, 653 | 761 | 857 | 953 | 1013) && crate::cpu::has_avx2() {
+        // The NTT module selects the same 3x512, twisted 4x512, or 5x512
+        // machine as rq::mult, using one prime because ternary coefficients
+        // are bounded.
+        if matches!(p, 653 | 761 | 857 | 953 | 1013 | 1277) && crate::cpu::has_avx2() {
             // SAFETY: AVX2 support confirmed by has_avx2()
             unsafe {
                 return crate::rq::ntt::mult3(h, f, g, p);
@@ -363,7 +364,7 @@ mod tests {
         if !crate::cpu::has_avx2() {
             return;
         }
-        for p in [653usize, 761, 857, 953, 1013] {
+        for p in [653usize, 761, 857, 953, 1013, 1277] {
             let mut state = 0xabcd_ef01_2345_6789u64 ^ p as u64;
             let mut next = move || {
                 state ^= state << 13;

@@ -9,8 +9,9 @@
 //!
 //! p = 653 and 761 use a 3×512 Good decomposition. p = 857, 953, and 1013
 //! split into four strided tracks and twist the high outer-product terms by the
-//! transformed track variable. The remaining p = 1277 set retains the
-//! schoolbook dispatcher until its 5×512 Good outer convolution is provided.
+//! transformed track variable. p = 1277 uses a 5×512 Good decomposition. Thus
+//! every standardized parameter set uses the same audited 512-point transform
+//! core while retaining the outer convolution prescribed by its padded shape.
 //!
 //! `ntt512`/`invntt512` are mechanical translations of the reference's
 //! auto-generated kernels, and the twiddle tables are extracted verbatim; both
@@ -79,6 +80,14 @@ const TARGET_1013: TargetModulus = TargetModulus {
     squeeze: 4,
     q_inverse: 12857,
     crt_scale: -1022,
+};
+
+/// CRT and reduction constants for sntrup1277.
+const TARGET_1277: TargetModulus = TargetModulus {
+    q: 7879,
+    squeeze: 4,
+    q_inverse: 17143,
+    crt_scale: 2969,
 };
 
 #[inline]
@@ -729,6 +738,246 @@ fn mult3_1024(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
     }
 }
 
+/// Applies Good's coprime 5×512 permutation to a 1280-coefficient operand.
+///
+/// An input index maps to its residues modulo 5 and 512. Because those moduli
+/// are coprime, the pair uniquely locates every coefficient in the enclosing
+/// 2560-coefficient cyclic convolution, while the zero-initialized locations
+/// not reached by the 1280-coefficient input remain explicit padding.
+fn good5(tracks: &mut [i16], input: &[i16; 1280]) {
+    // Each source coefficient has one destination; loop indices are public and
+    // independent of the polynomial values.
+    for (index, &coefficient) in input.iter().enumerate() {
+        tracks[(index % 5) * 512 + index % 512] = coefficient;
+    }
+}
+
+/// Reverses [`good5`] into a complete 2560-coefficient convolution.
+fn ungood5(output: &mut [i16; 2560], tracks: &[i16]) {
+    // The Chinese-remainder index pair covers every output position exactly
+    // once because gcd(5, 512) = 1.
+    for (index, coefficient) in output.iter_mut().enumerate() {
+        *coefficient = tracks[(index % 5) * 512 + index % 512];
+    }
+}
+
+/// Runs one prime's cyclic five-track outer convolution.
+///
+/// The difference-product formula is the reference implementation's
+/// Karatsuba-shaped schedule: five diagonal and ten cross products recover all
+/// five cyclic coefficients, rather than issuing 25 direct products.
+macro_rules! prime_pass5 {
+    ($f:expr, $g:expr, $out:expr, $sq:ident, $mm:ident, $qdata:expr) => {{
+        // Both five-track operands are transformed in one contiguous batch.
+        let mut fg = SecretBuffer::new([0i16; 10 * 512]);
+        good5(&mut fg[..5 * 512], $f);
+        good5(&mut fg[5 * 512..], $g);
+        ntt512(&mut fg[..], 10, $qdata);
+
+        let mut hpad = SecretBuffer::new([0i16; 5 * 512]);
+        let mut i = 0usize;
+        while i < 512 {
+            let f0 = $sq(_mm256_loadu_si256(fg.as_ptr().add(i) as *const __m256i));
+            let f1 = $sq(_mm256_loadu_si256(
+                fg.as_ptr().add(512 + i) as *const __m256i
+            ));
+            let f2 = $sq(_mm256_loadu_si256(
+                fg.as_ptr().add(1024 + i) as *const __m256i
+            ));
+            let f3 = $sq(_mm256_loadu_si256(
+                fg.as_ptr().add(1536 + i) as *const __m256i
+            ));
+            let f4 = $sq(_mm256_loadu_si256(
+                fg.as_ptr().add(2048 + i) as *const __m256i
+            ));
+            let g0 = $sq(_mm256_loadu_si256(
+                fg.as_ptr().add(2560 + i) as *const __m256i
+            ));
+            let g1 = $sq(_mm256_loadu_si256(
+                fg.as_ptr().add(3072 + i) as *const __m256i
+            ));
+            let g2 = $sq(_mm256_loadu_si256(
+                fg.as_ptr().add(3584 + i) as *const __m256i
+            ));
+            let g3 = $sq(_mm256_loadu_si256(
+                fg.as_ptr().add(4096 + i) as *const __m256i
+            ));
+            let g4 = $sq(_mm256_loadu_si256(
+                fg.as_ptr().add(4608 + i) as *const __m256i
+            ));
+
+            let d0 = $mm(f0, g0);
+            let d1 = $mm(f1, g1);
+            let d2 = $mm(f2, g2);
+            let d3 = $mm(f3, g3);
+            let d4 = $mm(f4, g4);
+            let dsum = $sq(add16(add16(d0, d1), d2));
+            let dsum = $sq(add16(add16(d3, d4), dsum));
+
+            let mut h0 = add16(dsum, $mm(sub16(f4, f1), sub16(g1, g4)));
+            let mut h1 = add16(dsum, $mm(sub16(f1, f0), sub16(g0, g1)));
+            let mut h2 = add16(dsum, $mm(sub16(f2, f0), sub16(g0, g2)));
+            let mut h3 = add16(dsum, $mm(sub16(f3, f0), sub16(g0, g3)));
+            let mut h4 = add16(dsum, $mm(sub16(f4, f0), sub16(g0, g4)));
+            h0 = add16(h0, $mm(sub16(f3, f2), sub16(g2, g3)));
+            h1 = add16(h1, $mm(sub16(f4, f2), sub16(g2, g4)));
+            h2 = add16(h2, $mm(sub16(f4, f3), sub16(g3, g4)));
+            h3 = add16(h3, $mm(sub16(f2, f1), sub16(g1, g2)));
+            h4 = add16(h4, $mm(sub16(f3, f1), sub16(g1, g3)));
+
+            _mm256_storeu_si256(hpad.as_mut_ptr().add(i) as *mut __m256i, $sq(h0));
+            _mm256_storeu_si256(hpad.as_mut_ptr().add(512 + i) as *mut __m256i, $sq(h1));
+            _mm256_storeu_si256(hpad.as_mut_ptr().add(1024 + i) as *mut __m256i, $sq(h2));
+            _mm256_storeu_si256(hpad.as_mut_ptr().add(1536 + i) as *mut __m256i, $sq(h3));
+            _mm256_storeu_si256(hpad.as_mut_ptr().add(2048 + i) as *mut __m256i, $sq(h4));
+            i += 16;
+        }
+
+        invntt512(&mut hpad[..], 5, $qdata);
+        ungood5($out, &hpad[..]);
+
+        // Both transform-domain operand and result buffers are secret guards.
+    }};
+}
+
+/// Computes the 2560-coefficient sntrup1277 convolution in R/q.
+#[target_feature(enable = "avx2")]
+fn mult1280(output: &mut [i16; 2560], f: &[i16; 1280], g: &[i16; 1280], target: TargetModulus) {
+    unsafe {
+        // Two transform primes provide enough centered CRT range for the
+        // maximum sntrup1277 convolution coefficient.
+        let mut h7681 = SecretBuffer::new([0i16; 2560]);
+        let mut h10753 = SecretBuffer::new([0i16; 2560]);
+        prime_pass5!(f, g, &mut *h7681, squeeze_7681, mulmod_7681, &QDATA_7681);
+        prime_pass5!(
+            f,
+            g,
+            &mut *h10753,
+            squeeze_10753,
+            mulmod_10753,
+            &QDATA_10753
+        );
+
+        let mut i = 0usize;
+        while i < 2560 {
+            let u1 = mulmod_10753(
+                _mm256_loadu_si256(h10753.as_ptr().add(i) as *const __m256i),
+                _mm256_set1_epi16(1268),
+            );
+            let u2 = mulmod_7681(
+                _mm256_loadu_si256(h7681.as_ptr().add(i) as *const __m256i),
+                _mm256_set1_epi16(956),
+            );
+            let t = mulmod_7681(sub16(u2, u1), _mm256_set1_epi16(-2539));
+            let result = add16(
+                u1,
+                mulmod_target(t, _mm256_set1_epi16(target.crt_scale), target),
+            );
+            _mm256_storeu_si256(output.as_mut_ptr().add(i) as *mut __m256i, result);
+            i += 16;
+        }
+
+        // Both CRT residue arrays are erased before returning.
+    }
+}
+
+/// Computes the 2560-coefficient sntrup1277 convolution in R/3.
+#[target_feature(enable = "avx2")]
+fn mult1280_3(output: &mut [i16; 2560], f: &[i16; 1280], g: &[i16; 1280]) {
+    unsafe {
+        // The ternary coefficient bound fits in the 7681 prime alone.
+        let mut h7681 = SecretBuffer::new([0i16; 2560]);
+        prime_pass5!(f, g, &mut *h7681, squeeze_7681, mulmod_7681, &QDATA_7681);
+        let mut i = 0usize;
+        while i < 2560 {
+            let result = mulmod_7681(
+                _mm256_loadu_si256(h7681.as_ptr().add(i) as *const __m256i),
+                _mm256_set1_epi16(956),
+            );
+            _mm256_storeu_si256(output.as_mut_ptr().add(i) as *mut __m256i, result);
+            i += 16;
+        }
+
+        // The prime-field product remains guarded through conversion.
+    }
+}
+
+/// Multiplies sntrup1277 polynomials in R/q through the 5×512 machine.
+#[target_feature(enable = "avx2")]
+fn mult_1280(h: &mut [i16], f: &[i16], g: &[i8], target: TargetModulus) {
+    unsafe {
+        const P: usize = 1277;
+        // Fixed transform storage supplies three zero padding coefficients.
+        let mut fp = SecretBuffer::new([0i16; 1280]);
+        fp[..P].copy_from_slice(f);
+        let mut gp = SecretBuffer::new([0i16; 1280]);
+        for k in 0..P {
+            gp[k] = i16::from(g[k]);
+        }
+        let mut i = 0usize;
+        while i < 1280 {
+            let value = _mm256_loadu_si256(fp.as_ptr().add(i) as *const __m256i);
+            let value = freeze_target(squeeze_target(value, target), target);
+            _mm256_storeu_si256(fp.as_mut_ptr().add(i) as *mut __m256i, value);
+            i += 16;
+        }
+
+        let mut product = SecretBuffer::new([0i16; 2560]);
+        mult1280(&mut product, &fp, &gp, target);
+        product[0] -= product[P - 1];
+
+        let mut i = 0usize;
+        while i < 1280 {
+            let low = _mm256_loadu_si256(product.as_ptr().add(i) as *const __m256i);
+            let high = _mm256_loadu_si256(product.as_ptr().add(i + P) as *const __m256i);
+            let shifted = _mm256_loadu_si256(product.as_ptr().add(i + P - 1) as *const __m256i);
+            let value = freeze_target(
+                squeeze_target(add16(low, add16(high, shifted)), target),
+                target,
+            );
+            _mm256_storeu_si256(fp.as_mut_ptr().add(i) as *mut __m256i, value);
+            i += 16;
+        }
+        h[..P].copy_from_slice(&fp[..P]);
+
+        // Padded operands and the complete convolution are guarded secrets.
+    }
+}
+
+/// Multiplies sntrup1277 polynomials in R/3 through the 5×512 machine.
+#[target_feature(enable = "avx2")]
+fn mult3_1280(h: &mut [i8], f: &[i8], g: &[i8]) {
+    unsafe {
+        const P: usize = 1277;
+        let mut fp = SecretBuffer::new([0i16; 1280]);
+        let mut gp = SecretBuffer::new([0i16; 1280]);
+        for k in 0..P {
+            fp[k] = i16::from(f[k]);
+            gp[k] = i16::from(g[k]);
+        }
+
+        let mut product = SecretBuffer::new([0i16; 2560]);
+        mult1280_3(&mut product, &fp, &gp);
+        product[0] -= product[P - 1];
+
+        let mut folded = SecretBuffer::new([0i16; 1280]);
+        let mut i = 0usize;
+        while i < 1280 {
+            let low = _mm256_loadu_si256(product.as_ptr().add(i) as *const __m256i);
+            let high = _mm256_loadu_si256(product.as_ptr().add(i + P) as *const __m256i);
+            let shifted = _mm256_loadu_si256(product.as_ptr().add(i + P - 1) as *const __m256i);
+            let value = freeze_3(squeeze_3(add16(low, add16(high, shifted))));
+            _mm256_storeu_si256(folded.as_mut_ptr().add(i) as *mut __m256i, value);
+            i += 16;
+        }
+        for k in 0..P {
+            h[k] = folded[k] as i8;
+        }
+
+        // Every widened and transform-domain representation is zeroized.
+    }
+}
+
 /// Multiplies a p = 653 or 761 polynomial in R/q via the 3×512 machine.
 #[target_feature(enable = "avx2")]
 fn mult_768(h: &mut [i16], f: &[i16], g: &[i8], p: usize, target: TargetModulus) {
@@ -785,6 +1034,7 @@ pub fn mult(h: &mut [i16], f: &[i16], g: &[i8], params: &SntrupParameters) {
         (857, 5167) => mult_1024(h, f, g, 857, TARGET_857),
         (953, 6343) => mult_1024(h, f, g, 953, TARGET_953),
         (1013, 7177) => mult_1024(h, f, g, 1013, TARGET_1013),
+        (1277, 7879) => mult_1280(h, f, g, TARGET_1277),
         _ => unreachable!("NTT called for an unsupported parameter set"),
     }
 }
@@ -797,6 +1047,7 @@ pub fn mult3(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
     match p {
         653 | 761 => mult3_768(h, f, g, p),
         857 | 953 | 1013 => mult3_1024(h, f, g, p),
+        1277 => mult3_1280(h, f, g),
         _ => unreachable!("NTT called for an unsupported degree"),
     }
 }
