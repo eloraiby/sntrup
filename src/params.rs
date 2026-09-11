@@ -29,9 +29,10 @@ pub struct SntrupParameters {
     pub sk_size: usize,
     /// Ciphertext size in bytes: rounded_encode_size + 32.
     pub ct_size: usize,
-    /// Barrett reduction constant 1: floor(2^20 / Q).
+    /// First Barrett reciprocal approximation for reduction modulo `q`.
     pub barrett1: i32,
-    /// Barrett reduction constant 2: floor(2^28 / Q).
+    /// Second Barrett reciprocal approximation, selected inside the valid
+    /// correction window rather than required to equal `floor(2^28 / q)`.
     pub barrett2: i32,
 }
 

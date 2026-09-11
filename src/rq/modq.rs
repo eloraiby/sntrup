@@ -1,6 +1,8 @@
 /// Barrett reduction: freezes `a` into the canonical range [-(q-1)/2, (q-1)/2].
 ///
-/// `barrett1` = floor(2^20 / q), `barrett2` = floor(2^28 / q).
+/// `barrett1` and `barrett2` are reciprocal approximations at 20- and 28-bit
+/// scales. They are selected from correction-safe windows for each parameter
+/// set and are not necessarily the exact mathematical floors.
 ///
 /// The two Barrett steps alone can land up to ±3 outside the canonical range for
 /// a few thousand inputs per parameter set (exhaustively scanned over the live
@@ -108,14 +110,16 @@ mod tests {
     /// this test fails against that implementation and pins the fix.
     #[test]
     fn freeze_is_strictly_canonical_and_residue_correct() {
-        for &(q, b1, b2) in &[
-            (4621i32, 226i32, 58084i32),
-            (4591, 228, 58464),
-            (5167, 202, 51948),
-            (6343, 165, 42324),
-            (7177, 146, 37410),
-            (7879, 133, 34073),
-        ] {
+        let parameter_sets = [
+            &crate::params::SNTRUP653,
+            &crate::params::SNTRUP761,
+            &crate::params::SNTRUP857,
+            &crate::params::SNTRUP953,
+            &crate::params::SNTRUP1013,
+            &crate::params::SNTRUP1277,
+        ];
+        for params in parameter_sets {
+            let (q, b1, b2) = (params.q, params.barrett1, params.barrett2);
             let hq = (q - 1) / 2;
             let lim = hq + hq * hq;
             // Exhaustive canonical-range check over the full live window — the

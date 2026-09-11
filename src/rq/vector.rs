@@ -978,27 +978,16 @@ mod tests {
     #[test]
     fn fused_cswap_matches_two_pass_reference() {
         let mut s = 0x1234_5678_9abc_def1u64;
-        for &(q, b1, b2) in &[
-            (4621i32, 226i32, 58084i32),
-            (4591, 228, 58464),
-            (5167, 202, 51948),
-            (6343, 165, 42324),
-            (7177, 146, 37410),
-            (7879, 133, 34073),
-        ] {
-            let params = crate::params::SntrupParameters {
-                p: 0,
-                q,
-                w: 0,
-                q12: (q - 1) / 2,
-                small_encode_size: 0,
-                rounded_encode_size: 0,
-                pk_size: 0,
-                sk_size: 0,
-                ct_size: 0,
-                barrett1: b1,
-                barrett2: b2,
-            };
+        let parameter_sets = [
+            &crate::params::SNTRUP653,
+            &crate::params::SNTRUP761,
+            &crate::params::SNTRUP857,
+            &crate::params::SNTRUP953,
+            &crate::params::SNTRUP1013,
+            &crate::params::SNTRUP1277,
+        ];
+        for params in parameter_sets {
+            let (q, b1, b2) = (params.q, params.barrett1, params.barrett2);
             let hq = ((q - 1) / 2) as i16;
             for &n in &[2usize, 5, 16, 17, 33, 762, 768, 1524] {
                 for &mask in &[0isize, -1] {
@@ -1015,7 +1004,7 @@ mod tests {
 
                     let mut z_got = z0.clone();
                     let mut y_got = y0.clone();
-                    minus_product_shift_cswap(&mut z_got, &mut y_got, n, c, mask, &params);
+                    minus_product_shift_cswap(&mut z_got, &mut y_got, n, c, mask, params);
 
                     assert_eq!(z_got, z_ref, "z mismatch q={q} n={n} mask={mask}");
                     assert_eq!(y_got, y_ref, "y mismatch q={q} n={n} mask={mask}");
