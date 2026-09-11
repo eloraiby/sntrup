@@ -5,16 +5,17 @@
 //! Good's trick maps the 768-coefficient operands into 3 interleaved tracks of
 //! 512 (3 and 512 are coprime, and 3·512 = 1536 ≥ 2p−1 = 1521), then two
 //! 512-point NTTs run over the NTT-friendly primes 7681 and 10753 — 4591 itself
-//! is not NTT-friendly, and both primes are ≡ 1 mod 2^10 so 512-point
+//! is not NTT-friendly, and both primes are ≡ 1 mod 2^9 so 512-point
 //! transforms exist. A Karatsuba-shaped 3×3 pointwise stage, inverse NTTs, and
 //! CRT recombination bring the result back mod 4591. All arithmetic is 16-bit
 //! lanes: signed Montgomery products and `mulhrs` squeezes.
 //!
-//! **Scope: p = 761 only** (see `super::mult`'s dispatcher). The 3×512 machine
-//! holds products up to 1536 coefficients, so p ≤ 768 fits; p ≥ 857 needs the
-//! Good factor 5 variant (5·512 = 2560) with a 5×5 pointwise stage, which the
-//! reference generates as a separate parameter set. The twiddle tables are
-//! prime-specific, not p-specific, so that extension reuses them.
+//! **Current scope: p = 761 only** (see `super::mult`'s dispatcher). The same
+//! 3×512 Good machine can cover p = 653 after changing the final target-modulus
+//! reduction. The reference uses a twisted 4×512 striding construction for
+//! p = 857, 953, and 1013, then a 5×512 Good construction for p = 1277. The
+//! twiddle tables are prime-specific, not p-specific, so all three shapes can
+//! share the transforms below.
 //!
 //! `ntt512`/`invntt512` are mechanical translations of the reference's
 //! auto-generated kernels, and the twiddle tables are extracted verbatim; both
