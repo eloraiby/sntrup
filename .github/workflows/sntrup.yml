@@ -106,6 +106,17 @@ jobs:
           # KEM-operation features so serialization can be adopted alone.
           - name: serde
             flags: "--no-default-features --features serde"
+          # The RustCrypto trait integration is a public API surface of its own.
+          - name: kem
+            flags: "--no-default-features --features kem"
+          # JavaScript entropy support must also compile without implicitly
+          # enabling any key-generation or KEM operation.
+          - name: js
+            flags: "--no-default-features --features js"
+          # Exercise every optional public integration together so dependency
+          # feature unification cannot hide an incompatible combination.
+          - name: kem+serde+js
+            flags: "--no-default-features --features kem,serde,js"
           - name: kgen+ecap
             flags: "--no-default-features --features kgen,ecap"
           - name: kgen+dcap
@@ -123,6 +134,21 @@ jobs:
         run: cargo check ${{ matrix.flags }}
       - name: Test (${{ matrix.name }})
         run: cargo test ${{ matrix.flags }} --lib --tests
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      # Compile every production operation and public integration for the
+      # browser target. Tests cannot execute on this bare WebAssembly target.
+      - name: Check browser WebAssembly build
+        run: >-
+          cargo check --target wasm32-unknown-unknown --no-default-features
+          --features kem,serde,js
 
   careful:
     runs-on: ubuntu-latest
