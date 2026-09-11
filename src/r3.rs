@@ -81,9 +81,9 @@ fn reciprocal_eliminate(s: &[i8], p: usize) -> (isize, Vec<i8>) {
 pub fn mult(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
     #[cfg(all(target_arch = "x86_64", not(feature = "force-scalar")))]
     {
-        // Same 3x512 NTT machine as rq::mult, using one transform prime because
-        // ternary convolution coefficients remain far inside 7681/2.
-        if matches!(p, 653 | 761) && crate::cpu::has_avx2() {
+        // The NTT module selects the same 3x512 or twisted 4x512 machine as
+        // rq::mult, using one prime because ternary coefficients are bounded.
+        if matches!(p, 653 | 761 | 857 | 953 | 1013) && crate::cpu::has_avx2() {
             // SAFETY: AVX2 support confirmed by has_avx2()
             unsafe {
                 return crate::rq::ntt::mult3(h, f, g, p);
@@ -356,15 +356,14 @@ unsafe fn mult_neon(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 mod tests {
 
-    /// The 3×512 NTT mod-3 multiply must agree with schoolbook multiplication
-    /// for p = 653 and 761.
+    /// Every available NTT mod-3 shape must agree with schoolbook multiplication.
     #[cfg(all(target_arch = "x86_64", not(feature = "force-scalar")))]
     #[test]
     fn ntt_mult3_matches_scalar() {
         if !crate::cpu::has_avx2() {
             return;
         }
-        for p in [653usize, 761] {
+        for p in [653usize, 761, 857, 953, 1013] {
             let mut state = 0xabcd_ef01_2345_6789u64 ^ p as u64;
             let mut next = move || {
                 state ^= state << 13;
