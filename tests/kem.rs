@@ -1,7 +1,19 @@
 #![allow(missing_docs)]
 
 use sntrup::*;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
+/// Compile-time assertion used to pin the marker trait promised by secret
+/// wrapper types.
+fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
+
+/// Both exported secret wrappers advertise their drop-erasure behavior to
+/// generic containers and protocol adapters.
+#[test]
+fn secret_wrappers_implement_zeroize_on_drop() {
+    assert_zeroize_on_drop::<DecapsulationKey<Sntrup761Params>>();
+    assert_zeroize_on_drop::<SharedSecret<Sntrup761Params>>();
+}
 
 // ---------------------------------------------------------------------------
 // Implicit rejection: corrupted CT still returns a key, but a different one

@@ -5,7 +5,7 @@ use crate::params::SntrupParams;
 use crate::wipe::SecretBuffer;
 use core::marker::PhantomData;
 use subtle::ConstantTimeEq;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Streamlined NTRU Prime encapsulation key (public key).
 ///
@@ -603,6 +603,10 @@ impl<P: SntrupParams> Drop for DecapsulationKey<P> {
     }
 }
 
+/// Marks the private-key wrapper's `Drop` implementation for generic secret
+/// containers that require explicit zeroize-on-drop capability.
+impl<P: SntrupParams> ZeroizeOnDrop for DecapsulationKey<P> {}
+
 impl<P: SntrupParams> Zeroize for SharedSecret<P> {
     fn zeroize(&mut self) {
         // Preserve the public API's fixed-length invariant while erasing all
@@ -616,6 +620,10 @@ impl<P: SntrupParams> Drop for SharedSecret<P> {
         self.zeroize();
     }
 }
+
+/// Marks the shared-secret wrapper's `Drop` implementation for generic secret
+/// containers that require explicit zeroize-on-drop capability.
+impl<P: SntrupParams> ZeroizeOnDrop for SharedSecret<P> {}
 
 // ---------------------------------------------------------------------------
 // KEM operations (feature-gated)
