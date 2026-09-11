@@ -27,10 +27,40 @@
     clippy::needless_range_loop
 )]
 
-use crate::wipe::SecretBuffer;
+use crate::{params::SntrupParameters, wipe::SecretBuffer};
 use core::arch::x86_64::*;
 
-const Q: i16 = 4591;
+/// Target-ring constants used after reconstructing integer convolution values.
+///
+/// The transform primes are common to every parameter set, but converting the
+/// CRT result to R/q needs constants tied to the parameter set's `q`.
+#[derive(Clone, Copy, Debug)]
+struct TargetModulus {
+    /// Streamlined NTRU Prime coefficient modulus.
+    q: i16,
+    /// `mulhrs` reciprocal used to squeeze an i16 lane toward the target range.
+    squeeze: i16,
+    /// Multiplicative inverse of `q` modulo 2^16 for Montgomery products.
+    q_inverse: i16,
+    /// Reference-derived CRT scale from the 7681 residue into the target ring.
+    crt_scale: i16,
+}
+
+/// CRT and reduction constants for sntrup653.
+const TARGET_653: TargetModulus = TargetModulus {
+    q: 4621,
+    squeeze: 7,
+    q_inverse: -29499,
+    crt_scale: 1487,
+};
+
+/// CRT and reduction constants for sntrup761.
+const TARGET_761: TargetModulus = TargetModulus {
+    q: 4591,
+    squeeze: 7,
+    q_inverse: 15631,
+    crt_scale: -710,
+};
 
 #[inline]
 #[target_feature(enable = "avx2")]
@@ -107,11 +137,6 @@ fn mulmod(x: __m256i, y: __m256i, qinv: i16, q: i16) -> __m256i {
 
 #[inline]
 #[target_feature(enable = "avx2")]
-fn squeeze_4591(x: __m256i) -> __m256i {
-    squeeze(x, 7, 4591)
-}
-#[inline]
-#[target_feature(enable = "avx2")]
 fn squeeze_7681(x: __m256i) -> __m256i {
     squeeze(x, 4, 7681)
 }
@@ -119,11 +144,6 @@ fn squeeze_7681(x: __m256i) -> __m256i {
 #[target_feature(enable = "avx2")]
 fn squeeze_10753(x: __m256i) -> __m256i {
     squeeze(x, 3, 10753)
-}
-#[inline]
-#[target_feature(enable = "avx2")]
-fn mulmod_4591(x: __m256i, y: __m256i) -> __m256i {
-    mulmod(x, y, 15631, 4591)
 }
 #[inline]
 #[target_feature(enable = "avx2")]
@@ -136,13 +156,27 @@ fn mulmod_10753(x: __m256i, y: __m256i) -> __m256i {
     mulmod(x, y, -10751, 10753)
 }
 
-/// Fully reduce to `[-(q-1)/2, (q-1)/2]` (the reference's `freeze_4591_x16`).
+/// Squeezes lanes toward one parameter set's centered target-modulus range.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn freeze_4591(x: __m256i) -> __m256i {
-    let q = _mm256_set1_epi16(Q);
+fn squeeze_target(x: __m256i, target: TargetModulus) -> __m256i {
+    squeeze(x, target.squeeze, target.q)
+}
+
+/// Multiplies lanes in one parameter set's target Montgomery domain.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn mulmod_target(x: __m256i, y: __m256i, target: TargetModulus) -> __m256i {
+    mulmod(x, y, target.q_inverse, target.q)
+}
+
+/// Fully reduces lanes to `[-(q-1)/2, (q-1)/2]` for a target modulus.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn freeze_target(x: __m256i, target: TargetModulus) -> __m256i {
+    let q = _mm256_set1_epi16(target.q);
     let x = add16(x, _mm256_and_si256(q, _mm256_srai_epi16::<15>(x)));
-    let m = _mm256_srai_epi16::<15>(sub16(x, _mm256_set1_epi16((Q + 1) / 2)));
+    let m = _mm256_srai_epi16::<15>(sub16(x, _mm256_set1_epi16((target.q + 1) / 2)));
     _mm256_blendv_epi8(sub16(x, q), x, m)
 }
 
@@ -289,7 +323,7 @@ macro_rules! prime_pass {
 /// 1536-coefficient product mod q, via both primes plus CRT (the reference's
 /// `mult768`).
 #[target_feature(enable = "avx2")]
-fn mult768(h: &mut [i16; 1536], f: &[i16; 768], g: &[i16; 768]) {
+fn mult768(h: &mut [i16; 1536], f: &[i16; 768], g: &[i16; 768], target: TargetModulus) {
     unsafe {
         // Each prime pass overwrites its complete residue array before the CRT
         // loop consumes it. Initialized storage avoids manufacturing references
@@ -306,7 +340,7 @@ fn mult768(h: &mut [i16; 1536], f: &[i16; 768], g: &[i16; 768]) {
             &QDATA_10753
         );
 
-        // CRT the two residues back to mod 4591.
+        // CRT the two residues directly into the selected target modulus.
         let mut i = 0usize;
         while i < 1536 {
             let u1 = mulmod_10753(
@@ -318,7 +352,10 @@ fn mult768(h: &mut [i16; 1536], f: &[i16; 768], g: &[i16; 768]) {
                 _mm256_set1_epi16(956),
             );
             let t = mulmod_7681(sub16(u2, u1), _mm256_set1_epi16(-2539));
-            let t = add16(u1, mulmod_4591(t, _mm256_set1_epi16(-710)));
+            let t = add16(
+                u1,
+                mulmod_target(t, _mm256_set1_epi16(target.crt_scale), target),
+            );
             _mm256_storeu_si256(h.as_mut_ptr().add(i) as *mut __m256i, t);
             i += 16;
         }
@@ -327,7 +364,7 @@ fn mult768(h: &mut [i16; 1536], f: &[i16; 768], g: &[i16; 768]) {
     }
 }
 
-/// 1536-coefficient product mod 3. Product coefficients are bounded by p = 761,
+/// 1536-coefficient product mod 3. Product coefficients are bounded by p ≤ 761,
 /// far inside 7681/2, so a single prime suffices — no CRT.
 #[target_feature(enable = "avx2")]
 fn mult768_3(h: &mut [i16; 1536], f: &[i16; 768], g: &[i16; 768]) {
@@ -365,41 +402,36 @@ fn freeze_3(x: __m256i) -> __m256i {
     _mm256_blendv_epi8(sub16(x, three), x, m)
 }
 
-/// `h = f · g` in R/3 for p = 761, via the single-prime NTT.
+/// Multiplies a p = 653 or 761 polynomial in R/3 via the 3×512 machine.
 #[target_feature(enable = "avx2")]
-pub fn mult3_761(h: &mut [i8], f: &[i8], g: &[i8]) {
+fn mult3_768(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
     unsafe {
-        const P: usize = 761;
-        // The transform works on 768 coefficients; inputs occupy the first P
+        // The transform works on 768 coefficients; inputs occupy the first p
         // positions and the initialized tail supplies the required zero padding.
         let mut fp = SecretBuffer::new([0i16; 768]);
         let mut gp = SecretBuffer::new([0i16; 768]);
-        for k in 0..P {
+        for k in 0..p {
             fp[k] = i16::from(f[k]);
             gp[k] = i16::from(g[k]);
-        }
-        for k in P..768 {
-            fp[k] = 0;
-            gp[k] = 0;
         }
 
         // `mult768_3` overwrites every output coefficient.
         let mut fg = SecretBuffer::new([0i16; 1536]);
         mult768_3(&mut fg, &fp, &gp);
 
-        fg[0] -= fg[P - 1];
+        fg[0] -= fg[p - 1];
         // The reduction loop overwrites every complete SIMD block.
         let mut out = SecretBuffer::new([0i16; 768]);
         let mut i = 0usize;
         while i < 768 {
             let a = _mm256_loadu_si256(fg.as_ptr().add(i) as *const __m256i);
-            let b = _mm256_loadu_si256(fg.as_ptr().add(i + P) as *const __m256i);
-            let c = _mm256_loadu_si256(fg.as_ptr().add(i + P - 1) as *const __m256i);
+            let b = _mm256_loadu_si256(fg.as_ptr().add(i + p) as *const __m256i);
+            let c = _mm256_loadu_si256(fg.as_ptr().add(i + p - 1) as *const __m256i);
             let x = freeze_3(squeeze_3(add16(a, add16(b, c))));
             _mm256_storeu_si256(out.as_mut_ptr().add(i) as *mut __m256i, x);
             i += 16;
         }
-        for k in 0..P {
+        for k in 0..p {
             h[k] = out[k] as i8;
         }
         // All four working arrays are guarded because both operands are secret
@@ -407,51 +439,69 @@ pub fn mult3_761(h: &mut [i8], f: &[i8], g: &[i8]) {
     }
 }
 
+/// Multiplies a p = 653 or 761 polynomial in R/q via the 3×512 machine.
 #[target_feature(enable = "avx2")]
-pub fn mult761(h: &mut [i16], f: &[i16], g: &[i8]) {
+fn mult_768(h: &mut [i16], f: &[i16], g: &[i8], p: usize, target: TargetModulus) {
     unsafe {
-        const P: usize = 761;
-        // Copy the exact 761-coefficient input into initialized transform
+        // Copy the exact p-coefficient input into initialized transform
         // storage before any SIMD load. Loading directly from `f` in 16-lane
-        // blocks would over-read its final nine-coefficient tail.
+        // blocks could over-read its final partial block.
         let mut fp = SecretBuffer::new([0i16; 768]);
-        fp[..P].copy_from_slice(f);
+        fp[..p].copy_from_slice(f);
         let mut gp = SecretBuffer::new([0i16; 768]);
         let mut i = 0usize;
         while i < 768 {
             let x = _mm256_loadu_si256(fp.as_ptr().add(i) as *const __m256i);
             _mm256_storeu_si256(
                 fp.as_mut_ptr().add(i) as *mut __m256i,
-                freeze_4591(squeeze_4591(x)),
+                freeze_target(squeeze_target(x, target), target),
             );
             i += 16;
         }
         // The padded tail was initialized to zero and remains zero after
         // reduction, preserving the transform's zero-extension invariant.
-        for k in 0..P {
+        for k in 0..p {
             gp[k] = i16::from(g[k]);
-        }
-        for k in P..768 {
-            gp[k] = 0;
         }
 
         // `mult768` overwrites every output coefficient.
         let mut fg = SecretBuffer::new([0i16; 1536]);
-        mult768(&mut fg, &fp, &gp);
+        mult768(&mut fg, &fp, &gp, target);
 
-        fg[0] -= fg[P - 1];
+        fg[0] -= fg[p - 1];
         let mut i = 0usize;
         while i < 768 {
             let a = _mm256_loadu_si256(fg.as_ptr().add(i) as *const __m256i);
-            let b = _mm256_loadu_si256(fg.as_ptr().add(i + P) as *const __m256i);
-            let c = _mm256_loadu_si256(fg.as_ptr().add(i + P - 1) as *const __m256i);
-            let x = freeze_4591(squeeze_4591(add16(a, add16(b, c))));
+            let b = _mm256_loadu_si256(fg.as_ptr().add(i + p) as *const __m256i);
+            let c = _mm256_loadu_si256(fg.as_ptr().add(i + p - 1) as *const __m256i);
+            let x = freeze_target(squeeze_target(add16(a, add16(b, c)), target), target);
             _mm256_storeu_si256(fp.as_mut_ptr().add(i) as *mut __m256i, x);
             i += 16;
         }
-        h[..P].copy_from_slice(&fp[..P]);
+        h[..p].copy_from_slice(&fp[..p]);
         // All operand copies and product scratch are guarded because `g` is
         // secret at every call site.
+    }
+}
+
+/// Dispatches one supported 3×512 R/q multiplication by sealed parameters.
+#[target_feature(enable = "avx2")]
+pub fn mult(h: &mut [i16], f: &[i16], g: &[i8], params: &SntrupParameters) {
+    // Both cases use the same transform but distinct target-modulus constants.
+    match (params.p, params.q) {
+        (653, 4621) => mult_768(h, f, g, 653, TARGET_653),
+        (761, 4591) => mult_768(h, f, g, 761, TARGET_761),
+        _ => unreachable!("3x512 NTT called for an unsupported parameter set"),
+    }
+}
+
+/// Dispatches one supported 3×512 R/3 multiplication by public degree.
+#[target_feature(enable = "avx2")]
+pub fn mult3(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
+    // Target reduction is always mod 3; only the ring fold degree changes.
+    match p {
+        653 | 761 => mult3_768(h, f, g, p),
+        _ => unreachable!("3x512 NTT called for an unsupported degree"),
     }
 }
 

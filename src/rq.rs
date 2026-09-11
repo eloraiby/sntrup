@@ -210,13 +210,13 @@ pub fn round3(h: &mut [i16], params: &SntrupParameters) {
 pub fn mult(h: &mut [i16], f: &[i16], g: &[i8], params: &SntrupParameters) {
     #[cfg(all(target_arch = "x86_64", not(feature = "force-scalar")))]
     {
-        // The NTT machine (Good 3x512, primes 7681/10753) covers products up to
-        // 1536 coefficients, so it serves p = 761; larger sets need the factor-5
-        // variant and keep the schoolbook kernels for now.
-        if params.p == 761 && crate::cpu::has_avx2() {
+        // The 3x512 Good machine covers the two parameter sets whose operands
+        // pad to 768 coefficients. Larger sets retain schoolbook dispatch until
+        // their wider NTT outer convolutions are selected below.
+        if matches!(params.p, 653 | 761) && crate::cpu::has_avx2() {
             // SAFETY: AVX2 support confirmed by has_avx2()
             unsafe {
-                return ntt::mult761(h, f, g);
+                return ntt::mult(h, f, g, params);
             }
         }
         if crate::cpu::has_avxvnni() {
@@ -741,34 +741,37 @@ mod tests {
         }
     }
 
-    /// The NTT multiply must agree with the schoolbook kernel exactly on
-    /// p = 761 — random operands plus extreme (±(q−1)/2 × ±1) inputs.
+    /// The 3×512 NTT must agree with schoolbook multiplication for both sets it
+    /// serves, using random operands and the target moduli's extreme values.
     #[cfg(all(target_arch = "x86_64", not(feature = "force-scalar")))]
     #[test]
     fn ntt_mult_matches_scalar() {
         if !crate::cpu::has_avx2() {
             return;
         }
-        let params = crate::params::Sntrup761Params::params();
-        let p = params.p;
-        for seed in 0..8u64 {
-            let (f, g) = random_case(params, seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
-            let mut want = vec![0i16; p];
-            mult_scalar(&mut want, &f, &g, params);
-            let mut got = vec![0i16; p];
-            // SAFETY: AVX2 confirmed above.
-            unsafe { ntt::mult761(&mut got, &f, &g) };
-            assert_eq!(got, want, "ntt vs scalar: random seed={seed}");
-        }
-        let hq = params.q12 as i16;
-        for &(fv, gv) in &[(hq, 1i8), (-hq, 1), (hq, -1), (-hq, -1)] {
-            let f = vec![fv; p];
-            let g = vec![gv; p];
-            let mut want = vec![0i16; p];
-            mult_scalar(&mut want, &f, &g, params);
-            let mut got = vec![0i16; p];
-            unsafe { ntt::mult761(&mut got, &f, &g) };
-            assert_eq!(got, want, "ntt vs scalar: extreme f={fv} g={gv}");
+        for params in &all_params()[..2] {
+            let p = params.p;
+            for seed in 0..8u64 {
+                let (f, g) = random_case(params, seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+                let mut want = vec![0i16; p];
+                mult_scalar(&mut want, &f, &g, params);
+                let mut got = vec![0i16; p];
+                // SAFETY: AVX2 was confirmed above, and the first two sealed
+                // parameter entries are exactly the 3×512-supported sets.
+                unsafe { ntt::mult(&mut got, &f, &g, params) };
+                assert_eq!(got, want, "ntt vs scalar: p={p} random seed={seed}");
+            }
+            let hq = params.q12 as i16;
+            for &(fv, gv) in &[(hq, 1i8), (-hq, 1), (hq, -1), (-hq, -1)] {
+                let f = vec![fv; p];
+                let g = vec![gv; p];
+                let mut want = vec![0i16; p];
+                mult_scalar(&mut want, &f, &g, params);
+                let mut got = vec![0i16; p];
+                // SAFETY: same public AVX2 and parameter invariants as above.
+                unsafe { ntt::mult(&mut got, &f, &g, params) };
+                assert_eq!(got, want, "ntt vs scalar: p={p} extreme f={fv} g={gv}");
+            }
         }
     }
 

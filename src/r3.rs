@@ -81,12 +81,12 @@ fn reciprocal_eliminate(s: &[i8], p: usize) -> (isize, Vec<i8>) {
 pub fn mult(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
     #[cfg(all(target_arch = "x86_64", not(feature = "force-scalar")))]
     {
-        // Same NTT machine as rq::mult, single-prime (product coefficients are
-        // bounded by p, far inside 7681/2). p = 761 only — see rq::ntt.
-        if p == 761 && crate::cpu::has_avx2() {
+        // Same 3x512 NTT machine as rq::mult, using one transform prime because
+        // ternary convolution coefficients remain far inside 7681/2.
+        if matches!(p, 653 | 761) && crate::cpu::has_avx2() {
             // SAFETY: AVX2 support confirmed by has_avx2()
             unsafe {
-                return crate::rq::ntt::mult3_761(h, f, g);
+                return crate::rq::ntt::mult3(h, f, g, p);
             }
         }
         if crate::cpu::has_avxvnni() {
@@ -356,40 +356,43 @@ unsafe fn mult_neon(h: &mut [i8], f: &[i8], g: &[i8], p: usize) {
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 mod tests {
 
-    /// The NTT mod-3 multiply must agree with the schoolbook kernel exactly.
+    /// The 3×512 NTT mod-3 multiply must agree with schoolbook multiplication
+    /// for p = 653 and 761.
     #[cfg(all(target_arch = "x86_64", not(feature = "force-scalar")))]
     #[test]
     fn ntt_mult3_matches_scalar() {
         if !crate::cpu::has_avx2() {
             return;
         }
-        let p = 761usize;
-        let mut state = 0xabcd_ef01_2345_6789u64 | 1;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state.wrapping_mul(0x2545_F491_4F6C_DD1D)
-        };
-        for trial in 0..8 {
-            let f: Vec<i8> = (0..p).map(|_| ((next() % 3) as i8) - 1).collect();
-            let g: Vec<i8> = (0..p).map(|_| ((next() % 3) as i8) - 1).collect();
-            let mut want = vec![0i8; p];
-            mult_scalar(&mut want, &f, &g, p);
-            let mut got = vec![0i8; p];
-            // SAFETY: AVX2 confirmed above.
-            unsafe { crate::rq::ntt::mult3_761(&mut got, &f, &g) };
-            assert_eq!(got, want, "ntt mult3 vs scalar: trial={trial}");
-        }
-        // Extremes: all +1 and all -1.
-        for &(fv, gv) in &[(1i8, 1i8), (-1, 1), (1, -1), (-1, -1)] {
-            let f = vec![fv; p];
-            let g = vec![gv; p];
-            let mut want = vec![0i8; p];
-            mult_scalar(&mut want, &f, &g, p);
-            let mut got = vec![0i8; p];
-            unsafe { crate::rq::ntt::mult3_761(&mut got, &f, &g) };
-            assert_eq!(got, want, "ntt mult3 extremes f={fv} g={gv}");
+        for p in [653usize, 761] {
+            let mut state = 0xabcd_ef01_2345_6789u64 ^ p as u64;
+            let mut next = move || {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+            };
+            for trial in 0..8 {
+                let f: Vec<i8> = (0..p).map(|_| ((next() % 3) as i8) - 1).collect();
+                let g: Vec<i8> = (0..p).map(|_| ((next() % 3) as i8) - 1).collect();
+                let mut want = vec![0i8; p];
+                mult_scalar(&mut want, &f, &g, p);
+                let mut got = vec![0i8; p];
+                // SAFETY: AVX2 and the supported public degree were confirmed.
+                unsafe { crate::rq::ntt::mult3(&mut got, &f, &g, p) };
+                assert_eq!(got, want, "ntt mult3 vs scalar: p={p} trial={trial}");
+            }
+            // Extremes maximize raw ternary convolution magnitudes.
+            for &(fv, gv) in &[(1i8, 1i8), (-1, 1), (1, -1), (-1, -1)] {
+                let f = vec![fv; p];
+                let g = vec![gv; p];
+                let mut want = vec![0i8; p];
+                mult_scalar(&mut want, &f, &g, p);
+                let mut got = vec![0i8; p];
+                // SAFETY: same public AVX2 and degree invariants as above.
+                unsafe { crate::rq::ntt::mult3(&mut got, &f, &g, p) };
+                assert_eq!(got, want, "ntt mult3 p={p} extremes f={fv} g={gv}");
+            }
         }
     }
 
