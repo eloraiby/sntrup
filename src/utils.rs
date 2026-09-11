@@ -182,9 +182,20 @@ fn ciphertexts_diff_mask(a: &[u8], b: &[u8]) -> i32 {
     ciphertexts_diff_mask_scalar(a, b)
 }
 
+/// Collapses unequal public slice lengths to one without a data-dependent branch.
+///
+/// Ciphertext wrapper lengths are fixed before this internal comparison, but
+/// including length in the primitive's result prevents future callers from
+/// accidentally treating equal prefixes as equal complete ciphertexts.
+#[allow(clippy::cast_possible_truncation)]
+fn lengths_diff_bit(a: &[u8], b: &[u8]) -> u16 {
+    let difference = a.len() ^ b.len();
+    ((difference | difference.wrapping_neg()) >> (usize::BITS - 1)) as u16
+}
+
 #[allow(clippy::cast_possible_wrap)]
 fn ciphertexts_diff_mask_scalar(a: &[u8], b: &[u8]) -> i32 {
-    let mut diff: u16 = 0;
+    let mut diff = lengths_diff_bit(a, b);
     let len = a.len().min(b.len());
     for i in 0..len {
         diff |= (a[i] ^ b[i]) as u16;
@@ -215,6 +226,7 @@ unsafe fn ciphertexts_diff_mask_avx2(a: &[u8], b: &[u8]) -> i32 {
         // the implicit-rejection comparison must hide).
         let inv = !(_mm256_movemask_epi8(_mm256_cmpeq_epi8(acc, _mm256_setzero_si256())) as u32);
         let mut diff: u16 = ((inv | inv.wrapping_neg()) >> 31) as u16;
+        diff |= lengths_diff_bit(a, b);
         // Handle remainder
         while i < len {
             diff |= (a[i] ^ b[i]) as u16;
@@ -241,6 +253,7 @@ unsafe fn ciphertexts_diff_mask_neon(a: &[u8], b: &[u8]) -> i32 {
         }
         // Horizontal max: any-nonzero check
         let mut diff: u16 = vmaxvq_u8(acc) as u16;
+        diff |= lengths_diff_bit(a, b);
         // Handle remainder
         while i < len {
             diff |= (a[i] ^ b[i]) as u16;
@@ -461,4 +474,27 @@ pub(crate) fn decapsulate_inner(
     // Every scratch binding and fixed secret copy is guarded, so the entire
     // decapsulation frame is erased on both ordinary return and unwinding.
     k.take()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ciphertexts_diff_mask, ciphertexts_diff_mask_scalar};
+
+    /// Equal prefixes with different lengths must never compare as complete
+    /// ciphertexts, on either the scalar oracle or the runtime dispatcher.
+    #[test]
+    fn ciphertext_comparison_includes_length() {
+        let cases: &[(&[u8], &[u8], i32)] = &[
+            (b"", b"", 0),
+            (b"same", b"same", 0),
+            (b"same", b"same-tail", -1),
+            (b"same-tail", b"same", -1),
+            (b"same", b"sand", -1),
+        ];
+
+        for &(left, right, expected) in cases {
+            assert_eq!(ciphertexts_diff_mask_scalar(left, right), expected);
+            assert_eq!(ciphertexts_diff_mask(left, right), expected);
+        }
+    }
 }
