@@ -3,6 +3,51 @@
 
 use sntrup::*;
 
+/// Minimal non-human-readable deserializer that transfers an owned byte
+/// buffer through `Visitor::visit_byte_buf`.
+///
+/// This pins the path used by binary formats without adding a particular wire
+/// format as a development dependency.
+struct OwnedBytesDeserializer {
+    /// Buffer whose ownership must transfer to the crate's typed serde visitor.
+    bytes: Vec<u8>,
+}
+
+impl<'de> serde::Deserializer<'de> for OwnedBytesDeserializer {
+    type Error = serde::de::value::Error;
+
+    fn deserialize_any<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_byte_buf(self.bytes)
+    }
+
+    fn deserialize_byte_buf<V: serde::de::Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error> {
+        visitor.visit_byte_buf(self.bytes)
+    }
+
+    fn is_human_readable(&self) -> bool {
+        false
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes option unit unit_struct newtype_struct seq tuple tuple_struct map
+        struct enum identifier ignored_any
+    }
+}
+
+/// Deserializes one owned binary byte buffer into a concrete wrapper type.
+fn from_owned_binary<'de, T: serde::Deserialize<'de>>(
+    bytes: Vec<u8>,
+) -> Result<T, serde::de::value::Error> {
+    T::deserialize(OwnedBytesDeserializer { bytes })
+}
+
 macro_rules! serde_json_test {
     ($name:ident, $kem:ty, $params:ty, $pk_size:expr, $ct_size:expr) => {
         mod $name {
@@ -124,6 +169,47 @@ mod reject_malformed_input {
         assert!(serde_json::from_str::<DecapsulationKey<Sntrup761Params>>(json).is_err());
         assert!(serde_json::from_str::<Ciphertext<Sntrup761Params>>(json).is_err());
         assert!(serde_json::from_str::<SharedSecret<Sntrup761Params>>(json).is_err());
+    }
+}
+
+mod binary_input {
+    use super::*;
+
+    /// Exact-size owned binary data must transfer into the secret wrapper.
+    #[test]
+    fn exact_shared_secret_is_accepted() {
+        let bytes = vec![0xA5; Sntrup761Params::SS_BYTES];
+        let secret: SharedSecret<Sntrup761Params> =
+            from_owned_binary(bytes.clone()).expect("exact shared secret");
+        assert_eq!(secret.as_ref(), bytes);
+    }
+
+    /// Both sides of the length boundary must fail through the owned-buffer path.
+    #[test]
+    fn short_and_oversized_secret_values_are_rejected() {
+        for length in [
+            Sntrup761Params::SS_BYTES - 1,
+            Sntrup761Params::SS_BYTES + 1,
+            Sntrup761Params::SS_BYTES + 4096,
+        ] {
+            assert!(
+                from_owned_binary::<SharedSecret<Sntrup761Params>>(vec![0x5A; length]).is_err(),
+                "owned secret length {length} must be rejected"
+            );
+        }
+    }
+
+    /// An exact-size but structurally invalid private key must be rejected only
+    /// after the owned allocation is under the secret import guard.
+    #[test]
+    fn malformed_decapsulation_key_is_rejected() {
+        assert!(
+            from_owned_binary::<DecapsulationKey<Sntrup761Params>>(vec![
+                0xFF;
+                Sntrup761Params::SK_BYTES
+            ])
+            .is_err()
+        );
     }
 }
 

@@ -673,6 +673,58 @@ impl<P: SntrupParams> DecapsulationKey<P> {
 mod serde_impl {
     use super::*;
 
+    /// Converts binary serde byte buffers directly into a concrete key wrapper.
+    ///
+    /// The visitor is parameterized by the destination type, so every owned
+    /// buffer follows that type's `TryFrom<Vec<u8>>` policy without type erasure.
+    /// Secret wrappers guard the allocation as the first import operation.
+    struct BinaryBytesVisitor<T> {
+        /// Fixed byte length used to describe the expected binary value.
+        expected: usize,
+        /// Associates this zero-sized visitor with its concrete output type.
+        marker: PhantomData<T>,
+    }
+
+    impl<T> BinaryBytesVisitor<T> {
+        /// Builds a typed visitor for one fixed-size wire representation.
+        fn new(expected: usize) -> Self {
+            Self {
+                expected,
+                marker: PhantomData,
+            }
+        }
+    }
+
+    impl<'de, T> serde::de::Visitor<'de> for BinaryBytesVisitor<T>
+    where
+        for<'a> T: TryFrom<&'a [u8], Error = Error>,
+        T: TryFrom<Vec<u8>, Error = Error>,
+    {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(formatter, "exactly {} binary bytes", self.expected)
+        }
+
+        fn visit_bytes<E: serde::de::Error>(self, bytes: &[u8]) -> Result<Self::Value, E> {
+            T::try_from(bytes).map_err(E::custom)
+        }
+
+        fn visit_borrowed_bytes<E: serde::de::Error>(
+            self,
+            bytes: &'de [u8],
+        ) -> Result<Self::Value, E> {
+            self.visit_bytes(bytes)
+        }
+
+        fn visit_byte_buf<E: serde::de::Error>(self, bytes: Vec<u8>) -> Result<Self::Value, E> {
+            // Ownership passes immediately to `TryFrom<Vec<u8>>`. For secret
+            // targets that function installs an unwind-safe erasure guard
+            // before inspecting either the length or the encoding.
+            T::try_from(bytes).map_err(E::custom)
+        }
+    }
+
     /// Generate `Serialize`/`Deserialize` for a byte-wrapper type.
     ///
     /// Deserialization validates the parameter set's fixed size and keeps the
@@ -689,6 +741,10 @@ mod serde_impl {
 
             impl<'de, P: SntrupParams> serde::Deserialize<'de> for $ty<P> {
                 fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                    if !d.is_human_readable() {
+                        return d.deserialize_byte_buf(BinaryBytesVisitor::<Self>::new(P::$size));
+                    }
+
                     let mut buf = zeroize::Zeroizing::new(vec![0u8; P::$size]);
                     let decoded = serdect::slice::deserialize_hex_or_bin(buf.as_mut_slice(), d)?;
                     if decoded.len() != P::$size {
