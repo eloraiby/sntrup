@@ -28,6 +28,9 @@ pub struct EncapsulationKey<P: SntrupParams> {
 /// Byte imports validate the two packed ternary fields, the embedded public
 /// key's canonical encoding, and its cached hash. Import validation does not
 /// prove that all fields came from the same key-generation execution.
+/// Explicit [`Zeroize::zeroize`] preserves the encoded length but permanently
+/// invalidates the key material; only dropping or replacing the value is useful
+/// afterward.
 #[derive(Clone)]
 pub struct DecapsulationKey<P: SntrupParams> {
     bytes: Vec<u8>,
@@ -55,7 +58,8 @@ pub struct Ciphertext<P: SntrupParams> {
 /// Streamlined NTRU Prime shared secret.
 ///
 /// Its allocation is erased on drop. Callers remain responsible for copies
-/// made through [`AsRef`] or serialization.
+/// made through [`AsRef`] or serialization. Explicit [`Zeroize::zeroize`]
+/// preserves the fixed 32-byte shape while replacing every byte with zero.
 #[derive(Clone)]
 pub struct SharedSecret<P: SntrupParams> {
     bytes: Vec<u8>,
@@ -583,7 +587,13 @@ impl<P: SntrupParams> Eq for SharedSecret<P> {}
 
 impl<P: SntrupParams> Zeroize for DecapsulationKey<P> {
     fn zeroize(&mut self) {
-        self.bytes.zeroize();
+        // Discard metadata derived from the pre-erasure public key so a later
+        // accidental operation cannot combine stale cache state with zeros.
+        let _ = self.h_cache.take();
+        // `Vec::zeroize` clears the vector length. Wipe the initialized slice
+        // instead so the typed wrapper retains its fixed-size memory-safety
+        // invariant even though the cryptographic key is now invalid.
+        crate::wipe::wipe(self.bytes.as_mut_slice());
     }
 }
 
@@ -595,7 +605,9 @@ impl<P: SntrupParams> Drop for DecapsulationKey<P> {
 
 impl<P: SntrupParams> Zeroize for SharedSecret<P> {
     fn zeroize(&mut self) {
-        self.bytes.zeroize();
+        // Preserve the public API's fixed-length invariant while erasing all
+        // secret bytes; calling `Vec::zeroize` would clear the length.
+        crate::wipe::wipe(self.bytes.as_mut_slice());
     }
 }
 

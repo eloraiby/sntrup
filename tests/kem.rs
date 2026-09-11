@@ -1,6 +1,7 @@
 #![allow(missing_docs)]
 
 use sntrup::*;
+use zeroize::Zeroize;
 
 // ---------------------------------------------------------------------------
 // Implicit rejection: corrupted CT still returns a key, but a different one
@@ -182,6 +183,44 @@ fn owned_secret_imports_reuse_valid_allocations() {
             DecapsulationKey::<Sntrup761Params>::try_from(private_bytes).expect("private key");
         assert_eq!(imported.as_ref().as_ptr(), private_pointer);
     }
+}
+
+/// Explicit shared-secret erasure must preserve its fixed-size wrapper shape.
+#[test]
+fn zeroized_shared_secret_retains_its_length() {
+    let mut secret =
+        SharedSecret::<Sntrup761Params>::try_from(vec![0x5A; Sntrup761Params::SS_BYTES])
+            .expect("shared secret");
+    secret.zeroize();
+
+    assert_eq!(secret.as_ref().len(), Sntrup761Params::SS_BYTES);
+    assert!(secret.as_ref().iter().all(|&byte| byte == 0));
+}
+
+/// Explicit private-key erasure must not violate the length assumptions used
+/// by extraction and implicit-rejection decapsulation.
+#[cfg(all(feature = "kgen", feature = "ecap", feature = "dcap"))]
+#[test]
+fn zeroized_decapsulation_key_retains_its_shape() {
+    let mut rng = rand::rng();
+    let (ek, mut dk) = Sntrup761::generate_key(&mut rng);
+    let (ct, _) = ek.encapsulate(&mut rng);
+    // Populate the lazy public-polynomial cache before erasure to verify that
+    // `zeroize` invalidates it along with the encoded key bytes.
+    let _ = dk.decapsulate(&ct);
+
+    dk.zeroize();
+
+    assert_eq!(dk.as_ref().len(), Sntrup761Params::SK_BYTES);
+    assert!(dk.as_ref().iter().all(|&byte| byte == 0));
+    assert_eq!(
+        dk.encapsulation_key().as_ref().len(),
+        Sntrup761Params::PK_BYTES
+    );
+    assert_eq!(
+        dk.decapsulate(&ct).as_ref().len(),
+        Sntrup761Params::SS_BYTES
+    );
 }
 
 // ---------------------------------------------------------------------------

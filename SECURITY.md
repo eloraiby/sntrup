@@ -82,6 +82,12 @@ supplied random generator panics after partially filling a destination. Owned
 private-key imports move their accepted allocation instead of cloning it, and
 malformed owned inputs remain guarded throughout validation.
 
+Calling `Zeroize::zeroize` explicitly preserves each secret wrapper's encoded
+length. A zeroized shared secret contains 32 zero bytes. A zeroized private key
+is no longer cryptographically valid and should only be dropped or replaced;
+the stable length prevents accidental post-erasure method calls from violating
+the wrapper's memory-safety invariants.
+
 No in-process cleanup mechanism runs after `panic = "abort"`, forced process
 termination, power loss, or operating-system failure. Deployments that require
 post-crash secrecy must combine zeroization with disabled core dumps, locked or
