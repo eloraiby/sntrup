@@ -1012,4 +1012,65 @@ mod tests {
             }
         }
     }
+
+    /// The 512-bit divstep passes must agree exactly with their 256-bit
+    /// counterparts when AVX-512 F/BW/VL is available.
+    ///
+    /// CI sets `SNTRUP_REQUIRE_AVX512=1` under an AVX-512-capable emulator so a
+    /// missing capability becomes a failure instead of silently skipping the
+    /// only execution coverage for these kernels.
+    #[cfg(all(target_arch = "x86_64", not(feature = "force-scalar")))]
+    #[test]
+    fn avx512_elimination_matches_avx2() {
+        if !crate::cpu::has_avx512() {
+            assert!(
+                std::env::var_os("SNTRUP_REQUIRE_AVX512").is_none(),
+                "AVX-512 F/BW/VL was required but is not exposed by the runner"
+            );
+            return;
+        }
+
+        let mut state = 0xd1a5_7e90_51a2_0041u64;
+        for params in [&crate::params::SNTRUP761, &crate::params::SNTRUP1277] {
+            let q = params.q;
+            let half_q = (q / 2) as u64;
+            let sample =
+                |state: &mut u64| ((next(state) % (2 * half_q + 1)) as i32 - half_q as i32) as i16;
+
+            for &mask in &[0isize, -1] {
+                const LEN: usize = 64;
+                let f: Vec<i16> = (0..=LEN).map(|_| sample(&mut state)).collect();
+                let g: Vec<i16> = (0..=LEN).map(|_| sample(&mut state)).collect();
+                let f0 = sample(&mut state);
+                let g0 = sample(&mut state);
+
+                let mut f256 = f.clone();
+                let mut g256 = g.clone();
+                let mut f512 = f.clone();
+                let mut g512 = g.clone();
+                // SAFETY: AVX2 is implied by the required AVX-512 subsets on
+                // supported x86 hosts, and AVX-512 was checked above. Both
+                // arrays provide the documented `1 + LEN` capacity.
+                unsafe {
+                    swapeliminate_avx2(&mut f256, &mut g256, LEN, f0, g0, mask, q);
+                    swapeliminate_avx512(&mut f512, &mut g512, LEN, f0, g0, mask, q);
+                }
+                assert_eq!(f512, f256, "f mismatch q={q} mask={mask}");
+                assert_eq!(g512, g256, "g mismatch q={q} mask={mask}");
+
+                let mut v256 = f.clone();
+                let mut r256 = g.clone();
+                let mut v512 = f;
+                let mut r512 = g;
+                // SAFETY: identical capability and capacity argument as the
+                // forward elimination comparison above.
+                unsafe {
+                    xswapeliminate_avx2(&mut v256, &mut r256, LEN, f0, g0, mask, q);
+                    xswapeliminate_avx512(&mut v512, &mut r512, LEN, f0, g0, mask, q);
+                }
+                assert_eq!(v512, v256, "v mismatch q={q} mask={mask}");
+                assert_eq!(r512, r256, "r mismatch q={q} mask={mask}");
+            }
+        }
+    }
 }

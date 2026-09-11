@@ -22,9 +22,11 @@ The repository checks conformance at three levels:
   compact SHA-512 fixtures.
 - `tests/kat.rs` checks two historical sntrup761 algorithm vectors from
   `draft-josefsson-ntruprime-streamlined-00`.
-- Unit tests compare every compiled SIMD multiplication, inversion, codec, and
-  reduction path with its portable scalar implementation. CI runs both SIMD
-  and forced-scalar configurations.
+- Unit tests compare specialized SIMD multiplication, inversion, codec, and
+  reduction paths with portable or narrower-vector implementations. CI runs
+  native x86 and AArch64/NEON tests, forced-scalar tests, AVX-512 functional
+  tests under capability-asserting emulation, and sanitizers on both native
+  architectures.
 
 `generate_key_deterministic` is an extension provided by this crate. It expands
 a 32-byte seed with `ChaCha20Rng`; it is not the NIST KAT deterministic random

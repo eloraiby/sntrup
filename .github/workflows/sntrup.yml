@@ -55,6 +55,37 @@ jobs:
       - name: Test (${{ matrix.name }})
         run: cargo test --features ${{ matrix.features }} --all-targets --release
 
+  test-aarch64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - name: Test native NEON dispatch
+        run: cargo test --features serde --all-targets --release
+      - name: Compare with forced scalar
+        run: cargo test --features serde,force-scalar --all-targets --release
+
+  test-avx512-emulated:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: qemu-x86_64 -cpu max
+      SNTRUP_REQUIRE_AVX512: 1
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - name: Install user-mode x86 emulator
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes qemu-user
+      - name: Exercise and require AVX-512 F/BW/VL kernels
+        run: >-
+          cargo test --target x86_64-unknown-linux-gnu --lib --release
+          rq::vector::tests::avx512_elimination_matches_avx2
+
   feature-gates:
     runs-on: ubuntu-latest
     env:
@@ -118,6 +149,21 @@ jobs:
           components: rust-src
       - name: Test memory safety with SIMD enabled
         run: cargo test -Z build-std --target x86_64-unknown-linux-gnu --release --all-targets
+
+  address-sanitizer-aarch64:
+    runs-on: ubuntu-24.04-arm
+    env:
+      ASAN_OPTIONS: detect_leaks=0
+      CARGO_TARGET_DIR: target/asan-aarch64
+      RUSTFLAGS: -Zsanitizer=address
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: nightly
+          components: rust-src
+      - name: Test native NEON memory safety
+        run: cargo test -Z build-std --target aarch64-unknown-linux-gnu --release --all-targets
 
   clippy:
     runs-on: ubuntu-latest
