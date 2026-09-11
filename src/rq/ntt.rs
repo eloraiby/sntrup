@@ -239,20 +239,16 @@ macro_rules! prime_pass {
         // One contiguous 6x512 buffer: Good's three f-tracks then three g-tracks,
         // exactly the layout `ntt512` batches over. Writing the tracks straight
         // into it avoids copying 6 KB in and out per prime.
-        // SAFETY: `good` stores to every 16-coefficient block of all three of
-        // its output tracks unconditionally, so the two calls below fill all
-        // 6 x 512 elements before `ntt512` reads any.
-        let mut fg_slot = core::mem::MaybeUninit::<[i16; 6 * 512]>::uninit();
-        let fg = crate::scratch::uninit(&mut fg_slot);
+        // The transform owns all six tracks. Initializing the array keeps the
+        // mutable reference valid before `good` overwrites every coefficient.
+        let mut fg = [0i16; 6 * 512];
         good(&mut fg[..3 * 512], $f);
         good(&mut fg[3 * 512..], $g);
-        ntt512(fg, 6, $qdata);
+        ntt512(&mut fg, 6, $qdata);
 
-        // SAFETY: the pointwise loop below stores to `i`, `512 + i` and
-        // `1024 + i` for every `i` in `(0..512).step_by(16)`, covering all
-        // 3 x 512 elements before `invntt512` reads them.
-        let mut hpad_slot = core::mem::MaybeUninit::<[i16; 3 * 512]>::uninit();
-        let hpad = crate::scratch::uninit(&mut hpad_slot);
+        // The pointwise loop overwrites all three tracks. Zero initialization
+        // also provides deterministic padding if this invariant changes.
+        let mut hpad = [0i16; 3 * 512];
         let mut i = 0usize;
         while i < 512 {
             let f0 = $sq(_mm256_loadu_si256(fg.as_ptr().add(i) as *const __m256i));
@@ -281,7 +277,7 @@ macro_rules! prime_pass {
             i += 16;
         }
 
-        invntt512(hpad, 3, $qdata);
+        invntt512(&mut hpad, 3, $qdata);
         ungood($out, &hpad[..]);
     }};
 }
@@ -291,15 +287,13 @@ macro_rules! prime_pass {
 #[target_feature(enable = "avx2")]
 fn mult768(h: &mut [i16; 1536], f: &[i16; 768], g: &[i16; 768]) {
     unsafe {
-        // SAFETY: each is filled by `ungood`, whose store covers `k * 512 + j`
-        // for all `k < 3` and every `j` in `(0..512).step_by(16)` — all 1536
-        // elements — before the CRT loop reads them.
-        let mut h7681_slot = core::mem::MaybeUninit::<[i16; 1536]>::uninit();
-        let h7681 = crate::scratch::uninit(&mut h7681_slot);
-        let mut h10753_slot = core::mem::MaybeUninit::<[i16; 1536]>::uninit();
-        let h10753 = crate::scratch::uninit(&mut h10753_slot);
-        prime_pass!(f, g, h7681, squeeze_7681, mulmod_7681, &QDATA_7681);
-        prime_pass!(f, g, h10753, squeeze_10753, mulmod_10753, &QDATA_10753);
+        // Each prime pass overwrites its complete residue array before the CRT
+        // loop consumes it. Initialized storage avoids manufacturing references
+        // to uninitialized integer values.
+        let mut h7681 = [0i16; 1536];
+        let mut h10753 = [0i16; 1536];
+        prime_pass!(f, g, &mut h7681, squeeze_7681, mulmod_7681, &QDATA_7681);
+        prime_pass!(f, g, &mut h10753, squeeze_10753, mulmod_10753, &QDATA_10753);
 
         // CRT the two residues back to mod 4591.
         let mut i = 0usize;
@@ -325,10 +319,9 @@ fn mult768(h: &mut [i16; 1536], f: &[i16; 768], g: &[i16; 768]) {
 #[target_feature(enable = "avx2")]
 fn mult768_3(h: &mut [i16; 1536], f: &[i16; 768], g: &[i16; 768]) {
     unsafe {
-        // SAFETY: filled in full by `ungood`, as in `mult768`.
-        let mut h7681_slot = core::mem::MaybeUninit::<[i16; 1536]>::uninit();
-        let h7681 = crate::scratch::uninit(&mut h7681_slot);
-        prime_pass!(f, g, h7681, squeeze_7681, mulmod_7681, &QDATA_7681);
+        // The prime pass overwrites the full residue array before conversion.
+        let mut h7681 = [0i16; 1536];
+        prime_pass!(f, g, &mut h7681, squeeze_7681, mulmod_7681, &QDATA_7681);
         let mut i = 0usize;
         while i < 1536 {
             let u = mulmod_7681(
@@ -362,14 +355,10 @@ fn freeze_3(x: __m256i) -> __m256i {
 pub fn mult3_761(h: &mut [i8], f: &[i8], g: &[i8]) {
     unsafe {
         const P: usize = 761;
-        // SAFETY: the loop writes `0..P` and the tail clear covers `P..768`,
-        // so both are complete before `mult768_3` reads them. The 768-length
-        // padding is what makes the transform's zero-extension work, so it has
-        // to be written explicitly now that the buffer is not pre-zeroed.
-        let mut fp_slot = core::mem::MaybeUninit::<[i16; 768]>::uninit();
-        let fp = crate::scratch::uninit(&mut fp_slot);
-        let mut gp_slot = core::mem::MaybeUninit::<[i16; 768]>::uninit();
-        let gp = crate::scratch::uninit(&mut gp_slot);
+        // The transform works on 768 coefficients; inputs occupy the first P
+        // positions and the initialized tail supplies the required zero padding.
+        let mut fp = [0i16; 768];
+        let mut gp = [0i16; 768];
         for k in 0..P {
             fp[k] = i16::from(f[k]);
             gp[k] = i16::from(g[k]);
@@ -379,15 +368,13 @@ pub fn mult3_761(h: &mut [i8], f: &[i8], g: &[i8]) {
             gp[k] = 0;
         }
 
-        // SAFETY: `mult768_3` writes all 1536 coefficients of its output.
-        let mut fg_slot = core::mem::MaybeUninit::<[i16; 1536]>::uninit();
-        let fg = crate::scratch::uninit(&mut fg_slot);
-        mult768_3(fg, fp, gp);
+        // `mult768_3` overwrites every output coefficient.
+        let mut fg = [0i16; 1536];
+        mult768_3(&mut fg, &fp, &gp);
 
         fg[0] -= fg[P - 1];
-        // SAFETY: the loop below stores every 16-element block of `0..768`.
-        let mut out_slot = core::mem::MaybeUninit::<[i16; 768]>::uninit();
-        let out = crate::scratch::uninit(&mut out_slot);
+        // The reduction loop overwrites every complete SIMD block.
+        let mut out = [0i16; 768];
         let mut i = 0usize;
         while i < 768 {
             let a = _mm256_loadu_si256(fg.as_ptr().add(i) as *const __m256i);
@@ -401,10 +388,10 @@ pub fn mult3_761(h: &mut [i8], f: &[i8], g: &[i8]) {
             h[k] = out[k] as i8;
         }
         // Both operands are secret at every call site — wipe the working buffers.
-        wipe(fp);
-        wipe(gp);
-        wipe(fg);
-        wipe(out);
+        wipe(&mut fp);
+        wipe(&mut gp);
+        wipe(&mut fg);
+        wipe(&mut out);
     }
 }
 
@@ -412,30 +399,23 @@ pub fn mult3_761(h: &mut [i8], f: &[i8], g: &[i8]) {
 pub fn mult761(h: &mut [i16], f: &[i16], g: &[i8]) {
     unsafe {
         const P: usize = 761;
-        // SAFETY: the loop below stores every 16-element block of `0..768`.
-        let mut fp_slot = core::mem::MaybeUninit::<[i16; 768]>::uninit();
-        let fp = crate::scratch::uninit(&mut fp_slot);
-        // SAFETY: written over `0..P` by the copy loop and `P..768` by the tail
-        // clear, both before `mult768` reads it.
-        let mut gp_slot = core::mem::MaybeUninit::<[i16; 768]>::uninit();
-        let gp = crate::scratch::uninit(&mut gp_slot);
+        // Copy the exact 761-coefficient input into initialized transform
+        // storage before any SIMD load. Loading directly from `f` in 16-lane
+        // blocks would over-read its final nine-coefficient tail.
+        let mut fp = [0i16; 768];
+        fp[..P].copy_from_slice(f);
+        let mut gp = [0i16; 768];
         let mut i = 0usize;
         while i < 768 {
-            let x = if i < P {
-                _mm256_loadu_si256(f.as_ptr().add(i) as *const __m256i)
-            } else {
-                _mm256_setzero_si256()
-            };
+            let x = _mm256_loadu_si256(fp.as_ptr().add(i) as *const __m256i);
             _mm256_storeu_si256(
                 fp.as_mut_ptr().add(i) as *mut __m256i,
                 freeze_4591(squeeze_4591(x)),
             );
             i += 16;
         }
-        // The last block overruns p; clear the tail explicitly.
-        for k in P..768 {
-            fp[k] = 0;
-        }
+        // The padded tail was initialized to zero and remains zero after
+        // reduction, preserving the transform's zero-extension invariant.
         for k in 0..P {
             gp[k] = i16::from(g[k]);
         }
@@ -443,10 +423,9 @@ pub fn mult761(h: &mut [i16], f: &[i16], g: &[i8]) {
             gp[k] = 0;
         }
 
-        // SAFETY: `mult768` writes all 1536 coefficients of its output.
-        let mut fg_slot = core::mem::MaybeUninit::<[i16; 1536]>::uninit();
-        let fg = crate::scratch::uninit(&mut fg_slot);
-        mult768(fg, fp, gp);
+        // `mult768` overwrites every output coefficient.
+        let mut fg = [0i16; 1536];
+        mult768(&mut fg, &fp, &gp);
 
         fg[0] -= fg[P - 1];
         let mut i = 0usize;
@@ -461,9 +440,9 @@ pub fn mult761(h: &mut [i16], f: &[i16], g: &[i8]) {
         h[..P].copy_from_slice(&fp[..P]);
         // `g` is secret at every call site — wipe the operand copies and the
         // product scratch.
-        wipe(fp);
-        wipe(gp);
-        wipe(fg);
+        wipe(&mut fp);
+        wipe(&mut gp);
+        wipe(&mut fg);
     }
 }
 

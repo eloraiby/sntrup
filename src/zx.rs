@@ -482,20 +482,22 @@ pub mod random {
     #[allow(clippy::cast_possible_wrap)]
     pub fn random_tsmall(f: &mut [i8], p: usize, w: usize, rng: &mut impl Rng) {
         use crate::params::MAX_P;
-        use crate::scratch::uninit_scratch;
+        use crate::scratch::scratch_array;
 
         // One bulk RNG call instead of `p` per-element calls. For any `rand_core`
         // generator, `next_u32` is defined as the next four stream bytes little-endian,
         // so a byte fill reinterpreted LE is value-identical to the per-element
         // `rng.random::<i32>()` loop this replaces — the deterministic-keygen KATs
         // pin that equivalence.
-        // SAFETY: `fill_bytes` writes all `4 * p` bytes before they are read.
-        uninit_scratch!(bytes_buf: [u8; 4 * MAX_P]);
+        // Fill the active prefix in one RNG call. The initialized tail is never
+        // sampled and is wiped together with the active bytes before return.
+        scratch_array!(bytes_buf: [u8; 4 * MAX_P]);
         let bytes = &mut bytes_buf[..4 * p];
         rng.fill_bytes(bytes);
 
-        // SAFETY: every element of `r` is written from `bytes` before being read.
-        uninit_scratch!(r_buf: [i32; MAX_P]);
+        // Convert each four-byte chunk into one sortable tag. Only the active
+        // prefix participates in sorting and coefficient extraction.
+        scratch_array!(r_buf: [i32; MAX_P]);
         let r = &mut r_buf[..p];
         for (val, chunk) in r.iter_mut().zip(bytes.chunks_exact(4)) {
             // SAFETY (index): chunks_exact(4) yields exactly 4-byte chunks.

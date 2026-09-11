@@ -2,7 +2,7 @@ use sha2::{Digest, Sha512};
 use zeroize::Zeroize;
 
 use crate::params::SntrupParameters;
-use crate::scratch::uninit_scratch;
+use crate::scratch::scratch_array;
 use crate::{r3, rq, zx};
 
 /// Hash prefix helper: SHA-512(prefix || input), truncated to 32 bytes.
@@ -316,15 +316,16 @@ pub(crate) fn create_cipher(
 
     use crate::params::MAX_P;
 
-    // SAFETY: `rq::mult` writes all `p` product coefficients.
-    uninit_scratch!(c_buf: [i16; MAX_P]);
+    // Multiplication overwrites the active coefficient range; the remainder is
+    // initialized padding owned by this frame.
+    scratch_array!(c_buf: [i16; MAX_P]);
     let c = &mut c_buf[..p];
     rq::mult(c, h, r, params);
 
     const MAX_SES: usize = MAX_P.div_ceil(4) + 1;
     let ses = params.small_encode_size;
-    // SAFETY: `encode_into` writes all `ses` bytes.
-    uninit_scratch!(r_enc_buf: [u8; MAX_SES]);
+    // Encoding overwrites the complete active byte range.
+    scratch_array!(r_enc_buf: [u8; MAX_SES]);
     let r_enc = &mut r_enc_buf[..ses];
     zx::encoding::encode_into(r, r_enc, p, ses);
 
@@ -374,12 +375,12 @@ pub(crate) fn decapsulate_inner(
     // Parse SK: f(ses) || ginv(ses) || pk(pk_size) || rho(ses) || cache(32)
     // All working buffers live on this frame, bounded by MAX_P — decapsulation
     // performs no heap allocation.
-    // SAFETY: `decode_into` writes all `p` coefficients.
-    uninit_scratch!(f_buf: [i8; MAX_P]);
+    // Decode the private polynomial into the initialized active range.
+    scratch_array!(f_buf: [i8; MAX_P]);
     let f = &mut f_buf[..p];
     zx::encoding::decode_into(&sk[..ses], f, p);
-    // SAFETY: `decode_into` writes all `p` coefficients.
-    uninit_scratch!(ginv_buf: [i8; MAX_P]);
+    // Decode the inverse polynomial into its independent working buffer.
+    scratch_array!(ginv_buf: [i8; MAX_P]);
     let ginv = &mut ginv_buf[..p];
     zx::encoding::decode_into(&sk[ses..(2 * ses)], ginv, p);
     let pk_start = 2 * ses;
@@ -392,20 +393,20 @@ pub(crate) fn decapsulate_inner(
     cache.copy_from_slice(&sk[cache_start..cache_start + 32]);
 
     // Decrypt: Rounded_decode, multiply by f, Rq_mult3, R3_fromRq, R3_mult by ginv
-    // SAFETY: `rounded_decode_into` writes all `p` coefficients.
-    uninit_scratch!(c_buf: [i16; MAX_P]);
+    // Decode the public ciphertext prefix into coefficient form.
+    scratch_array!(c_buf: [i16; MAX_P]);
     let c = &mut c_buf[..p];
     rq::encoding::rounded_decode_into(&cstr[..params.rounded_encode_size], c, params);
-    // SAFETY: `rq::mult` writes all `p` product coefficients.
-    uninit_scratch!(cf_buf: [i16; MAX_P]);
+    // Multiply into a distinct buffer so ciphertext and key inputs never alias.
+    scratch_array!(cf_buf: [i16; MAX_P]);
     let cf = &mut cf_buf[..p];
     rq::mult(cf, c, f, params);
-    // SAFETY: `scale3_freeze3` writes one output per input coefficient.
-    uninit_scratch!(t3_buf: [i8; MAX_P]);
+    // Scale and reduce every active coefficient into the ternary ring.
+    scratch_array!(t3_buf: [i8; MAX_P]);
     let t3 = &mut t3_buf[..p];
     rq::scale3_freeze3(t3, cf, params);
-    // SAFETY: `r3::mult` writes all `p` product coefficients.
-    uninit_scratch!(r_buf: [i8; MAX_P]);
+    // Recover the candidate input polynomial in a separate working buffer.
+    scratch_array!(r_buf: [i8; MAX_P]);
     let r = &mut r_buf[..p];
     r3::mult(r, t3, ginv, p);
 
@@ -422,12 +423,12 @@ pub(crate) fn decapsulate_inner(
 
     // Hide: encode r, re-encrypt with pk, compute confirm hash
     const MAX_SES: usize = MAX_P.div_ceil(4) + 1;
-    // SAFETY: `encode_into` writes all `ses` bytes.
-    uninit_scratch!(r_enc_buf: [u8; MAX_SES]);
+    // Encode the complete candidate input used by confirmation and selection.
+    scratch_array!(r_enc_buf: [u8; MAX_SES]);
     let r_enc = &mut r_enc_buf[..ses];
     zx::encoding::encode_into(r, r_enc, p, ses);
-    // SAFETY: `rq::mult` writes all `p` product coefficients.
-    uninit_scratch!(hr_buf: [i16; MAX_P]);
+    // Re-encrypt the candidate into initialized coefficient storage.
+    scratch_array!(hr_buf: [i16; MAX_P]);
     let hr = &mut hr_buf[..p];
     rq::mult(hr, h, r, params);
 
@@ -435,7 +436,7 @@ pub(crate) fn decapsulate_inner(
     const MAX_CT: usize = 1847 + 32;
     // SAFETY: `round_and_encode_into` fills the rounded prefix and the confirm
     // hash is copied over the remainder, together covering all of `..ct_size`.
-    uninit_scratch!(cnew_buf: [u8; MAX_CT]);
+    scratch_array!(cnew_buf: [u8; MAX_CT]);
     let cnew = &mut cnew_buf[..params.ct_size];
     rq::encoding::round_and_encode_into(hr, &mut cnew[..params.rounded_encode_size], params);
     let mut confirm = [0u8; 32];
@@ -447,8 +448,9 @@ pub(crate) fn decapsulate_inner(
 
     // Constant-time select: r_enc on success (mask=0), rho on failure (mask=-1)
     let rho = &sk[rho_start..rho_end];
-    // SAFETY: `copy_from_slice` below writes all `ses` bytes.
-    uninit_scratch!(selected_buf: [u8; MAX_SES]);
+    // Begin with the valid-ciphertext candidate; the constant-time loop below
+    // replaces it with rho under the rejection mask.
+    scratch_array!(selected_buf: [u8; MAX_SES]);
     let selected = &mut selected_buf[..ses];
     selected.copy_from_slice(r_enc);
     let mask_byte = mask as u8;
