@@ -551,6 +551,17 @@ pub fn rounded_decode_into(c: &[u8], out: &mut [i16], params: &SntrupParameters)
             return super::codec761::decode_761x1531(out, c);
         }
     }
+    rounded_decode_generic_into(c, out, params);
+}
+
+/// Decodes a rounded polynomial through the generic variable-radix engine.
+///
+/// Keeping this entry point separate from [`rounded_decode_into`] gives the
+/// generated SIMD codec an independent differential oracle. It must never add
+/// architecture dispatch: production fallback and codec tests both rely on it
+/// executing the generic algorithm unconditionally.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub(super) fn rounded_decode_generic_into(c: &[u8], out: &mut [i16], params: &SntrupParameters) {
     let p = params.p;
     let q12 = params.q12;
     let q_rounded = (params.q as u16).div_ceil(3);

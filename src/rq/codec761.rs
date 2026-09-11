@@ -612,7 +612,7 @@ mod tests {
                 })
                 .collect();
             let mut want = vec![0i16; params.p];
-            crate::rq::encoding::rounded_decode_into(&s, &mut want, params);
+            crate::rq::encoding::rounded_decode_generic_into(&s, &mut want, params);
             let mut got = vec![0i16; params.p];
             // SAFETY: AVX2 confirmed above.
             unsafe { decode_761x1531(&mut got, &s) };
