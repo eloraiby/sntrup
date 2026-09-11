@@ -1031,45 +1031,80 @@ mod tests {
         }
 
         let mut state = 0xd1a5_7e90_51a2_0041u64;
-        for params in [&crate::params::SNTRUP761, &crate::params::SNTRUP1277] {
+        let parameter_sets = [
+            &crate::params::SNTRUP653,
+            &crate::params::SNTRUP761,
+            &crate::params::SNTRUP857,
+            &crate::params::SNTRUP953,
+            &crate::params::SNTRUP1013,
+            &crate::params::SNTRUP1277,
+        ];
+        for params in parameter_sets {
             let q = params.q;
             let half_q = (q / 2) as u64;
             let sample =
                 |state: &mut u64| ((next(state) % (2 * half_q + 1)) as i32 - half_q as i32) as i16;
 
-            for &mask in &[0isize, -1] {
-                const LEN: usize = 64;
-                let f: Vec<i16> = (0..=LEN).map(|_| sample(&mut state)).collect();
-                let g: Vec<i16> = (0..=LEN).map(|_| sample(&mut state)).collect();
-                let f0 = sample(&mut state);
-                let g0 = sample(&mut state);
+            // Exercise both sides of every 16- and 32-lane boundary. The
+            // production divstep schedule reaches arbitrary public lengths,
+            // so a single exact-width case would miss every padded tail.
+            for &len in &[1usize, 15, 16, 17, 31, 32, 33, 47, 48, 49, 63, 64, 65] {
+                for &mask in &[0isize, -1] {
+                    // Both kernels may access padding through the next
+                    // 32-lane boundary; initialize it with nontrivial values
+                    // so the comparison covers every loaded lane.
+                    let capacity = 1 + len.next_multiple_of(32);
+                    let f: Vec<i16> = (0..capacity).map(|_| sample(&mut state)).collect();
+                    let g: Vec<i16> = (0..capacity).map(|_| sample(&mut state)).collect();
+                    let f0 = sample(&mut state);
+                    let g0 = sample(&mut state);
 
-                let mut f256 = f.clone();
-                let mut g256 = g.clone();
-                let mut f512 = f.clone();
-                let mut g512 = g.clone();
-                // SAFETY: AVX2 is implied by the required AVX-512 subsets on
-                // supported x86 hosts, and AVX-512 was checked above. Both
-                // arrays provide the documented `1 + LEN` capacity.
-                unsafe {
-                    swapeliminate_avx2(&mut f256, &mut g256, LEN, f0, g0, mask, q);
-                    swapeliminate_avx512(&mut f512, &mut g512, LEN, f0, g0, mask, q);
-                }
-                assert_eq!(f512, f256, "f mismatch q={q} mask={mask}");
-                assert_eq!(g512, g256, "g mismatch q={q} mask={mask}");
+                    let mut f256 = f.clone();
+                    let mut g256 = g.clone();
+                    let mut f512 = f.clone();
+                    let mut g512 = g.clone();
+                    // SAFETY: AVX2 is implied by the required AVX-512 subsets
+                    // on supported x86 hosts, and AVX-512 was checked above.
+                    // Both arrays satisfy the widest kernel's capacity rule.
+                    unsafe {
+                        swapeliminate_avx2(&mut f256, &mut g256, len, f0, g0, mask, q);
+                        swapeliminate_avx512(&mut f512, &mut g512, len, f0, g0, mask, q);
+                    }
+                    // Padding past the logical window may differ because the
+                    // kernels round to different lane widths; only these
+                    // slices are observable by the divstep operation.
+                    assert_eq!(
+                        &f512[..=len],
+                        &f256[..=len],
+                        "f mismatch q={q} len={len} mask={mask}"
+                    );
+                    assert_eq!(
+                        &g512[..len],
+                        &g256[..len],
+                        "g mismatch q={q} len={len} mask={mask}"
+                    );
 
-                let mut v256 = f.clone();
-                let mut r256 = g.clone();
-                let mut v512 = f;
-                let mut r512 = g;
-                // SAFETY: identical capability and capacity argument as the
-                // forward elimination comparison above.
-                unsafe {
-                    xswapeliminate_avx2(&mut v256, &mut r256, LEN, f0, g0, mask, q);
-                    xswapeliminate_avx512(&mut v512, &mut r512, LEN, f0, g0, mask, q);
+                    let mut v256 = f.clone();
+                    let mut r256 = g.clone();
+                    let mut v512 = f;
+                    let mut r512 = g;
+                    // SAFETY: identical capability and capacity argument as
+                    // the forward elimination comparison above.
+                    unsafe {
+                        xswapeliminate_avx2(&mut v256, &mut r256, len, f0, g0, mask, q);
+                        xswapeliminate_avx512(&mut v512, &mut r512, len, f0, g0, mask, q);
+                    }
+                    assert_eq!(
+                        &v512[..=len],
+                        &v256[..=len],
+                        "v mismatch q={q} len={len} mask={mask}"
+                    );
+                    assert_eq!(
+                        &r512[..len],
+                        &r256[..len],
+                        "r mismatch q={q} len={len} mask={mask}"
+                    );
                 }
-                assert_eq!(v512, v256, "v mismatch q={q} mask={mask}");
-                assert_eq!(r512, r256, "r mismatch q={q} mask={mask}");
             }
         }
     }
