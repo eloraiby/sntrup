@@ -105,10 +105,11 @@ arrays, allocator or operating-system copies, swap, core dumps, and register
 spills. `hybrid-array` zeroization support is enabled so callers can explicitly
 erase exported fixed arrays. Avoid unnecessary `Clone` calls for secret types.
 
-`generate_key_deterministic` has one additional limitation: `rand_chacha` does
-not expose zeroization for its internal state, so the seed-expanded RNG state is
-dropped without an explicit wipe. Prefer `generate_key` with a short-lived,
-well-managed cryptographic RNG when deterministic derivation is not required.
+`generate_key_deterministic` and the `kem::Generate` adapter use a ChaCha20 RNG
+whose core state and buffered output implement zeroize-on-drop. The derived
+parameter-specific seed is guarded separately. The caller's borrowed seed and
+state held by caller-supplied random generators remain outside this crate's
+erasure boundary.
 
 ## Production checklist
 

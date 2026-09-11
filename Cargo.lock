@@ -91,6 +91,7 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "rand_core",
+ "zeroize",
 ]
 
 [[package]]
@@ -642,6 +643,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 name = "sntrup"
 version = "0.4.0"
 dependencies = [
+ "chacha20",
  "criterion",
  "getrandom",
  "hex",

@@ -726,17 +726,14 @@ impl<P: SntrupParams> SntrupKem<P> {
     /// This is a crate-specific convenience API, not the deterministic random
     /// bit generator used by NIST or upstream known-answer test formats.
     ///
-    /// Note: `rand_chacha` offers no zeroization support, so the RNG's internal state (which
-    /// contains the seed) is dropped without being wiped when this returns. Callers with
-    /// strict key-erasure requirements should treat the seed's residency in freed stack
-    /// memory as a known limitation of this function.
+    /// The derived seed, ChaCha state, and buffered output are erased on drop.
     pub fn generate_key_deterministic(
         seed: &[u8; 32],
     ) -> (EncapsulationKey<P>, DecapsulationKey<P>) {
         use rand::SeedableRng;
         let mut expanded_seed = SecretBuffer::new([0u8; 32]);
         derive_deterministic_keygen_seed::<P>(&mut expanded_seed, seed);
-        let mut rng = rand_chacha::ChaCha20Rng::from_seed(*expanded_seed);
+        let mut rng = chacha20::ChaCha20Rng::from_seed(*expanded_seed);
         Self::generate_key(&mut rng)
     }
 }
@@ -870,4 +867,30 @@ mod serde_impl {
     impl_serde!(DecapsulationKey, SK_BYTES);
     impl_serde!(Ciphertext, CT_BYTES);
     impl_serde!(SharedSecret, SS_BYTES);
+}
+
+#[cfg(all(test, feature = "kgen"))]
+mod tests {
+    use rand::{Rng, SeedableRng};
+    use zeroize::ZeroizeOnDrop;
+
+    /// Compile-time assertion for RNG implementations that promise erasure of
+    /// both their core state and buffered output when dropped.
+    fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
+
+    /// The zeroizing RustCrypto RNG must preserve the ChaCha20 byte stream used
+    /// by this API before the state-erasure implementation changed.
+    #[test]
+    fn zeroizing_chacha20_preserves_the_deterministic_stream() {
+        assert_zeroize_on_drop::<chacha20::ChaCha20Rng>();
+
+        let seed = [0xA7; 32];
+        let mut protected = chacha20::ChaCha20Rng::from_seed(seed);
+        let mut reference = rand_chacha::ChaCha20Rng::from_seed(seed);
+        let mut protected_bytes = [0u8; 1024];
+        let mut reference_bytes = [0u8; 1024];
+        protected.fill_bytes(&mut protected_bytes);
+        reference.fill_bytes(&mut reference_bytes);
+        assert_eq!(protected_bytes, reference_bytes);
+    }
 }

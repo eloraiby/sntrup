@@ -238,11 +238,10 @@ For `wasm32-wasi` (or `wasm32-wasip1`), the `js` feature is **not** needed since
 
 This branch incorporates an implementation security audit and its memory-safety, validation, dependency, and test-coverage fixes. It has not undergone an independent third-party cryptographic audit or formal side-channel validation. Review [SECURITY.md](SECURITY.md) before production deployment.
 
-Secret-derived heap temporaries (multiply scratch, Euclidean-inversion state, sampling
-randomness, hash intermediates) are wiped with the [`zeroize`](https://docs.rs/zeroize) crate
-before being freed. Known erasure and timing limitations, including
-`generate_key_deterministic`'s unwiped ChaCha20 state, are documented in
-[SECURITY.md](SECURITY.md).
+Secret-derived heap temporaries (multiply scratch, Euclidean-inversion state,
+sampling randomness, hash intermediates, and deterministic ChaCha20 state) are
+wiped before being freed. Remaining erasure and timing limitations are
+documented in [SECURITY.md](SECURITY.md).
 
 #### Algorithm
 
