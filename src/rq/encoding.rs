@@ -230,29 +230,41 @@ struct DecodePlan {
     cum_bottom: usize,
 }
 
-/// Twelve slots: `(parameter set, codec kind)`. Keyed by the pair actually
-/// requested, so a miss simply builds and stores its own plan.
-static PLANS: [std::sync::OnceLock<(u16, usize, Box<DecodePlan>)>; 12] =
+/// Twelve bounded slots: two codec plans for each supported parameter set.
+///
+/// Each `(modulus, degree)` pair has a permanent index, so concurrent first
+/// use cannot consume duplicate slots. The box keeps the sizeable plans off
+/// the static data segment while [`OnceLock`] provides thread-safe lazy setup.
+static PLANS: [std::sync::OnceLock<Box<DecodePlan>>; 12] =
     [const { std::sync::OnceLock::new() }; 12];
 
-fn plan_for(m0: u16, n_start: usize) -> &'static DecodePlan {
-    for slot in &PLANS {
-        // An occupied slot for a different key is skipped; an empty one is
-        // claimed for this key. Twelve slots cover every live combination.
-        if let Some((km, kn, plan)) = slot.get() {
-            if *km == m0 && *kn == n_start {
-                return plan;
-            }
-            continue;
-        }
-        let built = slot.get_or_init(|| (m0, n_start, Box::new(build_plan(m0, n_start))));
-        if built.0 == m0 && built.1 == n_start {
-            return &built.2;
-        }
+/// Maps every supported Rq and rounded codec to its unique cache slot.
+///
+/// This function is private because the variable-radix codec is only defined
+/// for the crate's six fixed parameter sets.
+#[allow(clippy::panic)]
+fn plan_index(m0: u16, n_start: usize) -> usize {
+    match (m0, n_start) {
+        (4621, 653) => 0,
+        (1541, 653) => 1,
+        (4591, 761) => 2,
+        (1531, 761) => 3,
+        (5167, 857) => 4,
+        (1723, 857) => 5,
+        (6343, 953) => 6,
+        (2115, 953) => 7,
+        (7177, 1013) => 8,
+        (2393, 1013) => 9,
+        (7879, 1277) => 10,
+        (2627, 1277) => 11,
+        _ => panic!("unsupported variable-radix codec ({m0}, {n_start})"),
     }
-    // Slots exhausted (cannot happen for the supported parameter sets): fall
-    // back to leaking one plan rather than failing.
-    Box::leak(Box::new(build_plan(m0, n_start)))
+}
+
+/// Returns the immutable plan for one supported codec, initializing exactly
+/// its assigned slot on first use.
+fn plan_for(m0: u16, n_start: usize) -> &'static DecodePlan {
+    PLANS[plan_index(m0, n_start)].get_or_init(|| Box::new(build_plan(m0, n_start)))
 }
 
 #[allow(clippy::cast_possible_truncation)]
