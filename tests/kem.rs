@@ -83,11 +83,11 @@ wrong_sk_test!(wrong_sk_1013, Sntrup1013);
 wrong_sk_test!(wrong_sk_1277, Sntrup1277);
 
 // ---------------------------------------------------------------------------
-// Constant-time decapsulate always returns SS_BYTES
+// Implicit rejection always returns a fixed-size shared secret
 // ---------------------------------------------------------------------------
 
 #[cfg(all(feature = "kgen", feature = "ecap", feature = "dcap"))]
-macro_rules! constant_time_test {
+macro_rules! fixed_rejection_output_test {
     ($name:ident, $kem:ty, $ct_size:expr) => {
         #[test]
         fn $name() {
@@ -107,17 +107,82 @@ macro_rules! constant_time_test {
 }
 
 #[cfg(all(feature = "kgen", feature = "ecap", feature = "dcap"))]
-constant_time_test!(constant_time_653, Sntrup653, 897);
+fixed_rejection_output_test!(fixed_rejection_output_653, Sntrup653, 897);
 #[cfg(all(feature = "kgen", feature = "ecap", feature = "dcap"))]
-constant_time_test!(constant_time_761, Sntrup761, 1039);
+fixed_rejection_output_test!(fixed_rejection_output_761, Sntrup761, 1039);
 #[cfg(all(feature = "kgen", feature = "ecap", feature = "dcap"))]
-constant_time_test!(constant_time_857, Sntrup857, 1184);
+fixed_rejection_output_test!(fixed_rejection_output_857, Sntrup857, 1184);
 #[cfg(all(feature = "kgen", feature = "ecap", feature = "dcap"))]
-constant_time_test!(constant_time_953, Sntrup953, 1349);
+fixed_rejection_output_test!(fixed_rejection_output_953, Sntrup953, 1349);
 #[cfg(all(feature = "kgen", feature = "ecap", feature = "dcap"))]
-constant_time_test!(constant_time_1013, Sntrup1013, 1455);
+fixed_rejection_output_test!(fixed_rejection_output_1013, Sntrup1013, 1455);
 #[cfg(all(feature = "kgen", feature = "ecap", feature = "dcap"))]
-constant_time_test!(constant_time_1277, Sntrup1277, 1847);
+fixed_rejection_output_test!(fixed_rejection_output_1277, Sntrup1277, 1847);
+
+// ---------------------------------------------------------------------------
+// Canonical key imports and intentionally opaque ciphertext imports
+// ---------------------------------------------------------------------------
+
+/// Typed keys reject non-canonical or inconsistent encodings, while a
+/// fixed-size ciphertext remains importable so decapsulation can perform
+/// implicit rejection without exposing a parser result.
+#[cfg(all(feature = "kgen", feature = "ecap", feature = "dcap"))]
+#[test]
+fn key_import_validates_structure_but_ciphertext_import_is_length_only() {
+    let mut rng = rand::rng();
+    let (ek, dk) = Sntrup761::generate_key(&mut rng);
+
+    let invalid_ek = vec![0xff; Sntrup761Params::PK_BYTES];
+    assert!(matches!(
+        EncapsulationKey::<Sntrup761Params>::try_from(invalid_ek),
+        Err(Error::InvalidEncoding { .. })
+    ));
+
+    // Force the first packed ternary digit to the reserved base-4 value 3.
+    let mut invalid_polynomial = dk.as_ref().to_vec();
+    invalid_polynomial[0] = (invalid_polynomial[0] & !3) | 3;
+    assert!(matches!(
+        DecapsulationKey::<Sntrup761Params>::try_from(invalid_polynomial),
+        Err(Error::InvalidEncoding { .. })
+    ));
+
+    // The final 32 private-key bytes redundantly contain Hash4(pk).
+    let mut inconsistent_cache = dk.as_ref().to_vec();
+    let cache_byte = inconsistent_cache.len() - 1;
+    inconsistent_cache[cache_byte] ^= 1;
+    assert!(matches!(
+        DecapsulationKey::<Sntrup761Params>::try_from(inconsistent_cache),
+        Err(Error::InvalidEncoding { .. })
+    ));
+
+    let arbitrary_ciphertext = vec![0xff; Sntrup761Params::CT_BYTES];
+    assert!(Ciphertext::<Sntrup761Params>::try_from(arbitrary_ciphertext).is_ok());
+
+    // Generated encodings remain accepted after the stricter validation.
+    assert!(EncapsulationKey::<Sntrup761Params>::try_from(ek.as_ref()).is_ok());
+    assert!(DecapsulationKey::<Sntrup761Params>::try_from(dk.as_ref()).is_ok());
+}
+
+/// Owned imports transfer their accepted allocations into secret wrappers,
+/// avoiding a transient duplicate, and shared secrets expose the documented
+/// fixed-size conversion family.
+#[test]
+fn owned_secret_imports_reuse_valid_allocations() {
+    let shared_bytes = vec![0x5a; Sntrup761Params::SS_BYTES];
+    let shared_pointer = shared_bytes.as_ptr();
+    let shared = SharedSecret::<Sntrup761Params>::try_from(shared_bytes).expect("shared secret");
+    assert_eq!(shared.as_ref().as_ptr(), shared_pointer);
+
+    #[cfg(feature = "kgen")]
+    {
+        let (_, dk) = Sntrup761::generate_key(&mut rand::rng());
+        let private_bytes = dk.as_ref().to_vec();
+        let private_pointer = private_bytes.as_ptr();
+        let imported =
+            DecapsulationKey::<Sntrup761Params>::try_from(private_bytes).expect("private key");
+        assert_eq!(imported.as_ref().as_ptr(), private_pointer);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Deterministic keygen from seed

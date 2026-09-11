@@ -78,7 +78,89 @@ macro_rules! impl_from_vec {
 impl_from_vec!(Ciphertext);
 impl_from_vec!(SharedSecret);
 
+/// Decodes a public key and computes the per-key values used by
+/// encapsulation and decapsulation.
+///
+/// Both outputs are public. Centralizing their construction keeps typed key
+/// import and the lazy operational caches on exactly the same decode path.
+fn public_key_metadata<P: SntrupParams>(bytes: &[u8]) -> (Vec<i16>, [u8; 32]) {
+    let params = P::params();
+    let mut polynomial = vec![0i16; params.p];
+    crate::rq::encoding::rq_decode_into(bytes, &mut polynomial, params);
+
+    let mut hash = [0u8; 32];
+    crate::utils::hash_prefix(&mut hash, 4, bytes);
+    (polynomial, hash)
+}
+
+/// Validates an encoded public key by decoding and re-encoding it.
+///
+/// Variable-radix decoding maps some out-of-range byte strings onto valid
+/// coefficients. Requiring a byte-identical round trip rejects those aliases
+/// and gives each typed encapsulation key one canonical representation.
+fn validate_public_key<P: SntrupParams>(bytes: &[u8]) -> Option<(Vec<i16>, [u8; 32])> {
+    let metadata = public_key_metadata::<P>(bytes);
+    let canonical = crate::rq::encoding::rq_encode(&metadata.0, P::params());
+    if bool::from(canonical.as_slice().ct_eq(bytes)) {
+        Some(metadata)
+    } else {
+        None
+    }
+}
+
+/// Checks the packed base-4 representation of a ternary polynomial without
+/// exiting early on the first invalid trit.
+///
+/// Full bytes encode four values from `{0, 1, 2}`; the final byte encodes one
+/// value and therefore must itself be at most two. A two-bit value of three is
+/// the only invalid full-byte digit.
+fn is_canonical_small_encoding(bytes: &[u8]) -> bool {
+    let Some((&last, body)) = bytes.split_last() else {
+        return false;
+    };
+
+    let mut invalid = last >> 2;
+    invalid |= ((last & 3) ^ 3).wrapping_sub(1) >> 7;
+    for &byte in body {
+        for shift in [0, 2, 4, 6] {
+            let digit = (byte >> shift) & 3;
+            invalid |= (digit ^ 3).wrapping_sub(1) >> 7;
+        }
+    }
+    invalid == 0
+}
+
+/// Validates the independently encoded parts of a private key and returns its
+/// decoded public polynomial for the decapsulation cache.
+///
+/// The wire format contains two ternary polynomials, an encapsulation key,
+/// unrestricted rejection randomness, and `Hash4(pk)`. This verifies every
+/// canonical or redundant field. It deliberately does not attempt an
+/// expensive proof that the polynomial fields arose from one key-generation
+/// execution; the standardized byte format does not include enough redundant
+/// data to establish that provenance.
+fn validate_private_key<P: SntrupParams>(bytes: &[u8]) -> Option<Vec<i16>> {
+    let params = P::params();
+    let ses = params.small_encode_size;
+    let public_start = 2 * ses;
+    let public_end = public_start + params.pk_size;
+    let cache_start = public_end + ses;
+
+    let f_valid = is_canonical_small_encoding(&bytes[..ses]);
+    let g_inverse_valid = is_canonical_small_encoding(&bytes[ses..2 * ses]);
+    let (public_polynomial, expected_hash) =
+        validate_public_key::<P>(&bytes[public_start..public_end])?;
+    let hash_valid = bool::from(expected_hash.ct_eq(&bytes[cache_start..cache_start + 32]));
+
+    if f_valid && g_inverse_valid && hash_valid {
+        Some(public_polynomial)
+    } else {
+        None
+    }
+}
+
 impl<P: SntrupParams> EncapsulationKey<P> {
+    /// Constructs a trusted public key produced inside this crate.
     pub(crate) fn from_vec(bytes: Vec<u8>) -> Self {
         Self {
             bytes,
@@ -87,17 +169,21 @@ impl<P: SntrupParams> EncapsulationKey<P> {
         }
     }
 
+    /// Constructs an imported, canonical public key with its already-verified
+    /// operational metadata installed in the cache.
+    fn from_validated_vec(bytes: Vec<u8>, metadata: (Vec<i16>, [u8; 32])) -> Self {
+        Self {
+            bytes,
+            pk_cache: std::sync::OnceLock::from(metadata),
+            _marker: PhantomData,
+        }
+    }
+
     /// The decoded public-key polynomial and Hash4(pk), computed once and reused.
     #[cfg(feature = "ecap")]
     fn cached_pk(&self) -> &(Vec<i16>, [u8; 32]) {
-        self.pk_cache.get_or_init(|| {
-            let params = P::params();
-            let mut h = vec![0i16; params.p];
-            crate::rq::encoding::rq_decode_into(&self.bytes, &mut h, params);
-            let mut pk_hash = [0u8; 32];
-            crate::utils::hash_prefix(&mut pk_hash, 4, &self.bytes);
-            (h, pk_hash)
-        })
+        self.pk_cache
+            .get_or_init(|| public_key_metadata::<P>(&self.bytes))
     }
 }
 
@@ -106,10 +192,21 @@ impl<P: SntrupParams> EncapsulationKey<P> {
 // ---------------------------------------------------------------------------
 
 impl<P: SntrupParams> DecapsulationKey<P> {
+    /// Constructs a trusted private key produced inside this crate.
     pub(crate) fn from_vec(bytes: Vec<u8>) -> Self {
         Self {
             bytes,
             h_cache: std::sync::OnceLock::new(),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Constructs an imported private key and installs the public polynomial
+    /// recovered during validation into the decapsulation cache.
+    fn from_validated_vec(bytes: Vec<u8>, public_polynomial: Vec<i16>) -> Self {
+        Self {
+            bytes,
+            h_cache: std::sync::OnceLock::from(public_polynomial),
             _marker: PhantomData,
         }
     }
@@ -200,10 +297,13 @@ impl_as_ref!(SharedSecret);
 // TryFrom<&[u8]>
 // ---------------------------------------------------------------------------
 
-/// Generate the `TryFrom` family (`&[u8]`, `Vec<u8>`, `&Vec<u8>`, `Box<[u8]>`)
-/// for a fixed-size wrapper type. The `&[u8]` impl is the single length-checked
-/// entry point; the owned variants delegate to it.
-macro_rules! impl_try_from {
+/// Generates owned and borrowed imports for a fixed-size, non-secret byte
+/// wrapper whose wire format intentionally has no canonicality check.
+///
+/// Ciphertexts use this path because invalid ciphertext content must reach
+/// decapsulation's implicit-rejection logic instead of producing an observable
+/// parse error.
+macro_rules! impl_public_bytes_try_from {
     ($ty:ident, $size:ident) => {
         impl<P: SntrupParams> TryFrom<&[u8]> for $ty<P> {
             type Error = Error;
@@ -221,7 +321,13 @@ macro_rules! impl_try_from {
         impl<P: SntrupParams> TryFrom<Vec<u8>> for $ty<P> {
             type Error = Error;
             fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
-                Self::try_from(bytes.as_slice())
+                if bytes.len() != P::$size {
+                    return Err(Error::InvalidSize {
+                        expected: P::$size,
+                        actual: bytes.len(),
+                    });
+                }
+                Ok(Self::from_vec(bytes))
             }
         }
 
@@ -235,14 +341,112 @@ macro_rules! impl_try_from {
         impl<P: SntrupParams> TryFrom<Box<[u8]>> for $ty<P> {
             type Error = Error;
             fn try_from(bytes: Box<[u8]>) -> Result<Self, Self::Error> {
-                Self::try_from(bytes.as_ref())
+                Self::try_from(bytes.into_vec())
             }
         }
     };
 }
 
-impl_try_from!(EncapsulationKey, PK_BYTES);
-impl_try_from!(Ciphertext, CT_BYTES);
+impl_public_bytes_try_from!(Ciphertext, CT_BYTES);
+
+/// Generates fixed-size imports for a secret byte wrapper.
+///
+/// Owned malformed inputs are wiped before their allocation is released; a
+/// borrowed input remains under the caller's ownership and is copied only
+/// after its length is accepted.
+macro_rules! impl_secret_bytes_try_from {
+    ($ty:ident, $size:ident) => {
+        impl<P: SntrupParams> TryFrom<&[u8]> for $ty<P> {
+            type Error = Error;
+            fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+                if bytes.len() != P::$size {
+                    return Err(Error::InvalidSize {
+                        expected: P::$size,
+                        actual: bytes.len(),
+                    });
+                }
+                Ok(Self::from_vec(bytes.to_vec()))
+            }
+        }
+
+        impl<P: SntrupParams> TryFrom<Vec<u8>> for $ty<P> {
+            type Error = Error;
+            fn try_from(mut bytes: Vec<u8>) -> Result<Self, Self::Error> {
+                if bytes.len() != P::$size {
+                    let actual = bytes.len();
+                    bytes.zeroize();
+                    return Err(Error::InvalidSize {
+                        expected: P::$size,
+                        actual,
+                    });
+                }
+                Ok(Self::from_vec(bytes))
+            }
+        }
+
+        impl<P: SntrupParams> TryFrom<&Vec<u8>> for $ty<P> {
+            type Error = Error;
+            fn try_from(bytes: &Vec<u8>) -> Result<Self, Self::Error> {
+                Self::try_from(bytes.as_slice())
+            }
+        }
+
+        impl<P: SntrupParams> TryFrom<Box<[u8]>> for $ty<P> {
+            type Error = Error;
+            fn try_from(bytes: Box<[u8]>) -> Result<Self, Self::Error> {
+                Self::try_from(bytes.into_vec())
+            }
+        }
+    };
+}
+
+impl_secret_bytes_try_from!(SharedSecret, SS_BYTES);
+
+impl<P: SntrupParams> TryFrom<&[u8]> for EncapsulationKey<P> {
+    type Error = Error;
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        if bytes.len() != P::PK_BYTES {
+            return Err(Error::InvalidSize {
+                expected: P::PK_BYTES,
+                actual: bytes.len(),
+            });
+        }
+        let metadata = validate_public_key::<P>(bytes).ok_or(Error::InvalidEncoding {
+            kind: "encapsulation key",
+        })?;
+        Ok(Self::from_validated_vec(bytes.to_vec(), metadata))
+    }
+}
+
+impl<P: SntrupParams> TryFrom<Vec<u8>> for EncapsulationKey<P> {
+    type Error = Error;
+    fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+        if bytes.len() != P::PK_BYTES {
+            return Err(Error::InvalidSize {
+                expected: P::PK_BYTES,
+                actual: bytes.len(),
+            });
+        }
+        let metadata = validate_public_key::<P>(&bytes).ok_or(Error::InvalidEncoding {
+            kind: "encapsulation key",
+        })?;
+        Ok(Self::from_validated_vec(bytes, metadata))
+    }
+}
+
+impl<P: SntrupParams> TryFrom<&Vec<u8>> for EncapsulationKey<P> {
+    type Error = Error;
+    fn try_from(bytes: &Vec<u8>) -> Result<Self, Self::Error> {
+        Self::try_from(bytes.as_slice())
+    }
+}
+
+impl<P: SntrupParams> TryFrom<Box<[u8]>> for EncapsulationKey<P> {
+    type Error = Error;
+    fn try_from(bytes: Box<[u8]>) -> Result<Self, Self::Error> {
+        Self::try_from(bytes.into_vec())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // PartialEq / Eq (EncapsulationKey, Ciphertext — non-secret, byte equality)
@@ -277,7 +481,10 @@ impl<P: SntrupParams> TryFrom<&[u8]> for DecapsulationKey<P> {
                 actual: bytes.len(),
             });
         }
-        Ok(Self::from_vec(bytes.to_vec()))
+        let public_polynomial = validate_private_key::<P>(bytes).ok_or(Error::InvalidEncoding {
+            kind: "decapsulation key",
+        })?;
+        Ok(Self::from_validated_vec(bytes.to_vec(), public_polynomial))
     }
 }
 
@@ -295,9 +502,16 @@ impl<P: SntrupParams> TryFrom<Vec<u8>> for DecapsulationKey<P> {
             });
         }
 
+        let Some(public_polynomial) = validate_private_key::<P>(&bytes) else {
+            bytes.zeroize();
+            return Err(Error::InvalidEncoding {
+                kind: "decapsulation key",
+            });
+        };
+
         // Transfer the allocation directly into the key. This avoids creating
         // a second secret copy that would otherwise be dropped unwiped.
-        Ok(Self::from_vec(bytes))
+        Ok(Self::from_validated_vec(bytes, public_polynomial))
     }
 }
 
@@ -475,7 +689,7 @@ mod serde_impl {
                     // Move the validated allocation into the wrapper. `buf`
                     // retains an empty vector, so its zeroizing drop cannot
                     // erase the successfully imported value.
-                    Ok(Self::from_vec(core::mem::take(&mut *buf)))
+                    Self::try_from(core::mem::take(&mut *buf)).map_err(serde::de::Error::custom)
                 }
             }
         };

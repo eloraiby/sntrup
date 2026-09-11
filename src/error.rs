@@ -11,4 +11,11 @@ pub enum Error {
         /// Provided size.
         actual: usize,
     },
+    /// A fixed-size key does not use the canonical Streamlined NTRU Prime
+    /// encoding or contains inconsistent embedded metadata.
+    #[error("invalid {kind} encoding")]
+    InvalidEncoding {
+        /// Kind of key whose encoded representation failed validation.
+        kind: &'static str,
+    },
 }
