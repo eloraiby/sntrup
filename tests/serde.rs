@@ -50,6 +50,7 @@ fn from_owned_binary<'de, T: serde::Deserialize<'de>>(
 
 macro_rules! serde_json_test {
     ($name:ident, $kem:ty, $params:ty, $pk_size:expr, $ct_size:expr) => {
+        #[cfg(all(feature = "kgen", feature = "ecap", feature = "dcap"))]
         mod $name {
             use super::*;
 

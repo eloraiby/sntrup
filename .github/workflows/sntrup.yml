@@ -71,6 +71,10 @@ jobs:
             flags: "--no-default-features --features ecap"
           - name: dcap
             flags: "--no-default-features --features dcap"
+          # Serde's format and rejection tests must remain independent of all
+          # KEM-operation features so serialization can be adopted alone.
+          - name: serde
+            flags: "--no-default-features --features serde"
           - name: kgen+ecap
             flags: "--no-default-features --features kgen,ecap"
           - name: kgen+dcap
