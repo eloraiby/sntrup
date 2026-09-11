@@ -36,9 +36,11 @@ bit generator and its seed cannot be substituted for a NIST `.rsp` seed.
 
 `EncapsulationKey::try_from` rejects non-canonical variable-radix public-key
 encodings. `DecapsulationKey::try_from` additionally checks both packed ternary
-fields and verifies that the embedded `Hash4(pk)` agrees with the embedded,
-canonical public key. This structural validation does not prove that all
-private-key fields were generated together.
+fields and verifies that the embedded `Hash4(pk)` agrees with the embedded
+canonical public key. Private-key import also checks the standardized weight
+of `f`, reconstructs a small `g = 3fh` in R/q, and verifies the supplied `g⁻¹`
+in R/3. This makes all checkable polynomial fields algebraically coherent;
+`rho` remains unrestricted rejection randomness by design.
 
 `Ciphertext::try_from` intentionally checks only length. Arbitrary fixed-size
 ciphertext contents must enter decapsulation, which always returns a 32-byte

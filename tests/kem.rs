@@ -136,12 +136,12 @@ fixed_rejection_output_test!(fixed_rejection_output_1277, Sntrup1277, 1847);
 // Canonical key imports and intentionally opaque ciphertext imports
 // ---------------------------------------------------------------------------
 
-/// Typed keys reject non-canonical or inconsistent encodings, while a
+/// Typed keys reject non-canonical or algebraically inconsistent encodings, while a
 /// fixed-size ciphertext remains importable so decapsulation can perform
 /// implicit rejection without exposing a parser result.
 #[cfg(all(feature = "kgen", feature = "ecap", feature = "dcap"))]
 #[test]
-fn key_import_validates_structure_but_ciphertext_import_is_length_only() {
+fn key_import_validates_coherence_but_ciphertext_import_is_length_only() {
     let mut rng = rand::rng();
     let (ek, dk) = Sntrup761::generate_key(&mut rng);
 
@@ -165,6 +165,39 @@ fn key_import_validates_structure_but_ciphertext_import_is_length_only() {
     inconsistent_cache[cache_byte] ^= 1;
     assert!(matches!(
         DecapsulationKey::<Sntrup761Params>::try_from(inconsistent_cache),
+        Err(Error::InvalidEncoding { .. })
+    ));
+
+    // Change only the sign of one nonzero f coefficient. This preserves the
+    // canonical ternary encoding and exact weight while breaking h = g/(3f).
+    let mut inconsistent_f = dk.as_ref().to_vec();
+    let coefficient = (0..Sntrup761Params::params().p)
+        .find(|&index| {
+            let digit = (inconsistent_f[index / 4] >> (2 * (index % 4))) & 3;
+            digit == 1 || digit == 2
+        })
+        .expect("generated f has fixed nonzero weight");
+    let byte = coefficient / 4;
+    let shift = 2 * (coefficient % 4);
+    inconsistent_f[byte] ^= 3 << shift;
+    assert!(matches!(
+        DecapsulationKey::<Sntrup761Params>::try_from(inconsistent_f),
+        Err(Error::InvalidEncoding { .. })
+    ));
+
+    // A public key and its matching cached hash remain structurally valid when
+    // transplanted together, but they are not coherent with the first key's f.
+    let (_, other_dk) = Sntrup761::generate_key(&mut rng);
+    let params = Sntrup761Params::params();
+    let public_start = 2 * params.small_encode_size;
+    let public_end = public_start + params.pk_size;
+    let cache_start = public_end + params.small_encode_size;
+    let mut inconsistent_public = dk.as_ref().to_vec();
+    inconsistent_public[public_start..public_end]
+        .copy_from_slice(&other_dk.as_ref()[public_start..public_end]);
+    inconsistent_public[cache_start..].copy_from_slice(&other_dk.as_ref()[cache_start..]);
+    assert!(matches!(
+        DecapsulationKey::<Sntrup761Params>::try_from(inconsistent_public),
         Err(Error::InvalidEncoding { .. })
     ));
 

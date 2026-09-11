@@ -26,8 +26,8 @@ pub struct EncapsulationKey<P: SntrupParams> {
 /// Streamlined NTRU Prime decapsulation key (secret key).
 ///
 /// Byte imports validate the two packed ternary fields, the embedded public
-/// key's canonical encoding, and its cached hash. Import validation does not
-/// prove that all fields came from the same key-generation execution.
+/// key's canonical encoding, its cached hash, and the algebraic relationships
+/// among `f`, `g⁻¹`, and the public polynomial.
 /// Explicit [`Zeroize::zeroize`] preserves the encoded length but permanently
 /// invalidates the key material; only dropping or replacing the value is useful
 /// afterward.
@@ -149,15 +149,59 @@ fn is_canonical_small_encoding(bytes: &[u8]) -> bool {
     invalid == 0
 }
 
-/// Validates the independently encoded parts of a private key and returns its
-/// decoded public polynomial for the decapsulation cache.
+/// Verifies the algebraic relationship among a private key's polynomial fields.
 ///
-/// The wire format contains two ternary polynomials, an encapsulation key,
-/// unrestricted rejection randomness, and `Hash4(pk)`. This verifies every
-/// canonical or redundant field. It deliberately does not attempt an
-/// expensive proof that the polynomial fields arose from one key-generation
-/// execution; the standardized byte format does not include enough redundant
-/// data to establish that provenance.
+/// For a generated key, `h = g/(3f)` in R/q. Multiplying by `3f` must therefore
+/// recover coefficients in `{-1, 0, 1}`, and that recovered `g` must multiply
+/// by the encoded `g⁻¹` to one in R/3. The fixed weight of `f` is checked at the
+/// same boundary. All decoded intermediates remain under erasure guards.
+fn private_polynomials_are_coherent(
+    f_bytes: &[u8],
+    g_inverse_bytes: &[u8],
+    public_polynomial: &[i16],
+    params: &crate::params::SntrupParameters,
+) -> bool {
+    let mut f = SecretBuffer::new(vec![0i8; params.p]);
+    crate::zx::encoding::decode_into(f_bytes, &mut f, params.p);
+    if f.iter().filter(|&&coefficient| coefficient != 0).count() != params.w {
+        return false;
+    }
+
+    let mut g_inverse = SecretBuffer::new(vec![0i8; params.p]);
+    crate::zx::encoding::decode_into(g_inverse_bytes, &mut g_inverse, params.p);
+
+    // Recover `g = 3fh` in R/q. A coherent key's canonical representatives are
+    // already small; reducing arbitrary representatives modulo three would
+    // accept unrelated public keys, so require the exact small range first.
+    let mut f_times_h = SecretBuffer::new(vec![0i16; params.p]);
+    crate::rq::mult(&mut f_times_h, public_polynomial, &f, params);
+    let mut g = SecretBuffer::new(vec![0i8; params.p]);
+    for (g_coefficient, &product) in g.iter_mut().zip(f_times_h.iter()) {
+        let recovered = crate::rq::modq::freeze(
+            3 * i32::from(product),
+            params.q,
+            params.barrett1,
+            params.barrett2,
+        );
+        if !(-1..=1).contains(&recovered) {
+            return false;
+        }
+        let Ok(recovered) = i8::try_from(recovered) else {
+            return false;
+        };
+        *g_coefficient = recovered;
+    }
+
+    let mut identity = SecretBuffer::new(vec![0i8; params.p]);
+    crate::r3::mult(&mut identity, &g, &g_inverse, params.p);
+    identity[0] == 1 && identity[1..].iter().all(|&coefficient| coefficient == 0)
+}
+
+/// Validates every checkable private-key field and returns the decoded public
+/// polynomial for the decapsulation cache.
+///
+/// Rejection randomness `rho` is intentionally unrestricted. Every other field
+/// is canonical, redundant, or algebraically related and is checked here.
 fn validate_private_key<P: SntrupParams>(bytes: &[u8]) -> Option<Vec<i16>> {
     let params = P::params();
     let ses = params.small_encode_size;
@@ -171,7 +215,16 @@ fn validate_private_key<P: SntrupParams>(bytes: &[u8]) -> Option<Vec<i16>> {
         validate_public_key::<P>(&bytes[public_start..public_end])?;
     let hash_valid = bool::from(expected_hash.ct_eq(&bytes[cache_start..cache_start + 32]));
 
-    if f_valid && g_inverse_valid && hash_valid {
+    let polynomials_valid = f_valid
+        && g_inverse_valid
+        && private_polynomials_are_coherent(
+            &bytes[..ses],
+            &bytes[ses..2 * ses],
+            &public_polynomial,
+            params,
+        );
+
+    if polynomials_valid && hash_valid {
         Some(public_polynomial)
     } else {
         None

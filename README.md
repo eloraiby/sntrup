@@ -25,7 +25,7 @@ The algorithm was authored by Daniel J. Bernstein, Chitchanok Chuengsatiansup, T
 | sntrup1013    | 4          | 1013 | 7177 | 448 |       1623 |       2417 |       1455 |            32 |
 | sntrup1277    | 5          | 1277 | 7879 | 492 |       2067 |       3059 |       1847 |            32 |
 
-All key and ciphertext sizes are in bytes. Key imports enforce canonical encodings and private-key cache consistency. Ciphertext imports intentionally enforce only the fixed length so invalid ciphertexts reach implicit rejection without creating a parser oracle.
+All key and ciphertext sizes are in bytes. Key imports enforce canonical encodings; private-key imports also verify cache consistency, fixed weight, and polynomial coherence. Ciphertext imports intentionally enforce only the fixed length so invalid ciphertexts reach implicit rejection without creating a parser oracle.
 
 > **Note:** sntrup653 (claimed NIST Category 1) is recommended for research and testing only. Prefer sntrup761 or higher for production use.
 
