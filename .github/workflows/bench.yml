@@ -66,6 +66,6 @@ jobs:
           toolchain: stable
       - uses: cargo-bins/cargo-binstall@b874e25ea559687bec77e281e9b271aa1367b624
       - name: Install cross
-        run: cargo binstall --no-confirm cross
+        run: cargo binstall --no-confirm cross@0.2.5
       - name: Test armv7 (scalar via QEMU)
         run: cross test --target armv7-unknown-linux-gnueabihf --release
