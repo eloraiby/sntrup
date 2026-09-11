@@ -434,8 +434,9 @@ pub(crate) fn decapsulate_inner(
     let hr = &mut hr_buf[..p];
     rq::mult(hr, h, r, params);
 
-    // ct_size = rounded_encode_size + 32; bound by the largest set.
-    const MAX_CT: usize = 1847 + 32;
+    // `ct_size` already includes the 32-byte confirmation hash and is bounded
+    // by the largest complete ciphertext.
+    use crate::params::MAX_CT;
     // SAFETY: `round_and_encode_into` fills the rounded prefix and the confirm
     // hash is copied over the remainder, together covering all of `..ct_size`.
     scratch_array!(cnew_buf: [u8; MAX_CT]);

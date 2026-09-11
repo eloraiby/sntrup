@@ -7,6 +7,10 @@ pub(crate) const SS_BYTES: usize = 32;
 /// the allocation-free codec and KEM paths.
 pub(crate) const MAX_P: usize = 1277;
 
+/// Largest complete ciphertext across the supported parameter sets, including
+/// the 32-byte confirmation hash.
+pub(crate) const MAX_CT: usize = 1847;
+
 /// Internal runtime parameter set for Streamlined NTRU Prime.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy)]

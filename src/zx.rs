@@ -499,9 +499,13 @@ pub mod random {
         // prefix participates in sorting and coefficient extraction.
         scratch_array!(r_buf: [i32; MAX_P]);
         let r = &mut r_buf[..p];
-        for (val, chunk) in r.iter_mut().zip(bytes.chunks_exact(4)) {
-            // SAFETY (index): chunks_exact(4) yields exactly 4-byte chunks.
-            *val = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        let (words, remainder) = bytes.as_chunks::<4>();
+        debug_assert!(
+            remainder.is_empty(),
+            "the byte buffer contains exactly four bytes per tag"
+        );
+        for (val, word) in r.iter_mut().zip(words) {
+            *val = i32::from_le_bytes(*word);
         }
         for val in r[..w].iter_mut() {
             *val &= -2;
