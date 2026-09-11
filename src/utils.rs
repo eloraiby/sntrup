@@ -65,25 +65,29 @@ fn int16_nonzero_mask(x: i16) -> i32 {
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap
 )]
-pub(crate) fn weightw_mask(r: &[i8], p: usize, w: usize) -> i32 {
+pub(crate) fn weightw_mask(r: &[i8], w: usize) -> i32 {
+    debug_assert!(
+        r.len() <= crate::params::MAX_P,
+        "KEM polynomial exceeds the largest supported parameter set"
+    );
     #[cfg(all(target_arch = "x86_64", not(feature = "force-scalar")))]
     if crate::cpu::has_avx2() {
         // SAFETY: AVX2 support confirmed by has_avx2()
         unsafe {
-            return weightw_mask_avx2(r, p, w);
+            return weightw_mask_avx2(r, w);
         }
     }
     #[cfg(all(target_arch = "aarch64", not(feature = "force-scalar")))]
     // SAFETY: NEON is baseline on aarch64
     unsafe {
-        return weightw_mask_neon(r, p, w);
+        return weightw_mask_neon(r, w);
     }
     #[allow(unreachable_code)]
-    weightw_mask_scalar(r, p, w)
+    weightw_mask_scalar(r, w)
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-fn weightw_mask_scalar(r: &[i8], _p: usize, w: usize) -> i32 {
+fn weightw_mask_scalar(r: &[i8], w: usize) -> i32 {
     let mut weight: i32 = 0;
     for &val in r.iter() {
         weight += (val & 1) as i32;
@@ -99,9 +103,10 @@ fn weightw_mask_scalar(r: &[i8], _p: usize, w: usize) -> i32 {
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap
 )]
-unsafe fn weightw_mask_avx2(r: &[i8], p: usize, w: usize) -> i32 {
+unsafe fn weightw_mask_avx2(r: &[i8], w: usize) -> i32 {
     unsafe {
         use core::arch::x86_64::*;
+        let p = r.len();
         let ones = _mm256_set1_epi8(1);
         let mut acc = _mm256_setzero_si256();
         let mut i = 0usize;
@@ -136,9 +141,10 @@ unsafe fn weightw_mask_avx2(r: &[i8], p: usize, w: usize) -> i32 {
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap
 )]
-unsafe fn weightw_mask_neon(r: &[i8], p: usize, w: usize) -> i32 {
+unsafe fn weightw_mask_neon(r: &[i8], w: usize) -> i32 {
     unsafe {
         use core::arch::aarch64::*;
+        let p = r.len();
         let ones = vdupq_n_s8(1);
         let mut acc = vdupq_n_u8(0);
         let mut i = 0usize;
@@ -419,7 +425,7 @@ pub(crate) fn decapsulate_inner(
 
     // Weight mask: on failure, set r to default weight-W vector
     // (W ones followed by P-W zeros), matching PQClean's Decrypt
-    let w_mask = weightw_mask(r, p, w);
+    let w_mask = weightw_mask(r, w);
     let not_mask = (!w_mask) as i8;
     for val in r[..w].iter_mut() {
         *val = ((*val ^ 1) & not_mask) ^ 1;
@@ -478,7 +484,26 @@ pub(crate) fn decapsulate_inner(
 
 #[cfg(test)]
 mod tests {
-    use super::{ciphertexts_diff_mask, ciphertexts_diff_mask_scalar};
+    use super::{
+        ciphertexts_diff_mask, ciphertexts_diff_mask_scalar, weightw_mask, weightw_mask_scalar,
+    };
+
+    /// Every weight implementation must count exactly the provided slice,
+    /// including tails that do not fill a SIMD register.
+    #[test]
+    fn weight_comparison_uses_slice_length() {
+        for length in [0usize, 1, 15, 16, 31, 32, 33, 653, 761, 1277] {
+            let polynomial: Vec<i8> = (0..length)
+                .map(|index| if index % 3 == 0 { -1 } else { 0 })
+                .collect();
+            let weight = polynomial.iter().filter(|&&value| value != 0).count();
+
+            assert_eq!(weightw_mask_scalar(&polynomial, weight), 0);
+            assert_eq!(weightw_mask(&polynomial, weight), 0);
+            assert_eq!(weightw_mask_scalar(&polynomial, weight + 1), -1);
+            assert_eq!(weightw_mask(&polynomial, weight + 1), -1);
+        }
+    }
 
     /// Equal prefixes with different lengths must never compare as complete
     /// ciphertexts, on either the scalar oracle or the runtime dispatcher.
