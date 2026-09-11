@@ -157,9 +157,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
           toolchain: nightly
+          components: rust-src
       - uses: cargo-bins/cargo-binstall@b874e25ea559687bec77e281e9b271aa1367b624
       - run: cargo binstall --no-confirm cargo-careful
-      - run: cargo careful test tests --features serde --release
+      # `tests` without dashes is a libtest name filter and previously selected
+      # no tests. Exercise both unit and integration targets explicitly.
+      - run: cargo careful test --features serde --release --lib --tests
 
   address-sanitizer:
     runs-on: ubuntu-latest
